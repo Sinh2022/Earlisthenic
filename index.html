@@ -35,6 +35,45 @@
       display: block;
       background-color: #161513;
     }
+    #fb-iab-banner {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 999999;
+      background: linear-gradient(90deg, #965438, #B56D4E);
+      color: #FBF8F1;
+      padding: 10px 14px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.45);
+      border-bottom: 1px solid rgba(255,255,255,0.2);
+    }
+    #fb-iab-banner .banner-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    #fb-iab-banner button {
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.3);
+      color: #fff;
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+    #fb-iab-banner button:hover {
+      background: rgba(255,255,255,0.35);
+    }
     /* Chặn hoàn toàn việc xuất PDF hoặc In màn hình */
     @media print {
       html, body {
@@ -44,6 +83,23 @@
   </style>
 </head>
 <body oncontextmenu="return false;" onselectstart="return false;" ondragstart="return false;">
+
+  <!-- Facebook In-App Browser Guidance Banner -->
+  <div id="fb-iab-banner">
+    <div class="banner-content">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:15px;">💡</span>
+        <span>
+          Đang mở trong trình duyệt Facebook. Để nghe nhạc FREE AUDIO lossless mượt mà không bị giới hạn mạng, hãy nhấn <strong>⋮</strong> (hoặc •••) ở góc trên và chọn <strong>"Mở bằng trình duyệt ngoài"</strong> (Chrome / Safari).
+        </span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button type="button" onclick="openInExternalBrowser()">Mở Chrome</button>
+        <button type="button" onclick="dismissFbBanner()">Đã hiểu</button>
+      </div>
+    </div>
+  </div>
+
   <iframe 
     id="app-frame"
     allow="accelerometer; ambient-light-sensor; autoplay; battery; bluetooth; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; execution-while-not-rendered; execution-while-out-of-viewport; fullscreen; gamepad; geolocation; gyroscope; hid; identity-credentials-get; idle-detection; local-fonts; magnetometer; microphone; midi; otp-credentials; payment; picture-in-picture; publickey-credentials-create; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; storage-access; usb; web-share; window-management; xr-spatial-tracking"
@@ -55,11 +111,56 @@
 
   <script>
     var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec";
-    var search = window.location.search || "";
+
+    // Detect Facebook In-App Browser (FBAN / FBAV / FB_IAB)
+    var isFbIab = /FBAN|FBAV|FB_IAB|FB4A|FBIOS/i.test(navigator.userAgent || '');
+    if (isFbIab) {
+      try {
+        if (!sessionStorage.getItem('fb_banner_dismissed')) {
+          var b = document.getElementById('fb-iab-banner');
+          if (b) b.style.display = 'block';
+        }
+      } catch (e) {}
+    }
+
+    function dismissFbBanner() {
+      var b = document.getElementById('fb-iab-banner');
+      if (b) b.style.display = 'none';
+      try { sessionStorage.setItem('fb_banner_dismissed', '1'); } catch (e) {}
+    }
+
+    function openInExternalBrowser() {
+      var cleanUrl = "https://sinh2022.github.io/Earlisthenic/";
+      if (/Android/i.test(navigator.userAgent)) {
+        window.location.href = "intent://sinh2022.github.io/Earlisthenic/#Intent;scheme=https;package=com.android.chrome;end";
+      } else {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(cleanUrl).then(function() {
+            alert("Đã sao chép liên kết: " + cleanUrl + "\nHãy dán vào Safari hoặc Chrome để trải nghiệm tốt nhất!");
+          }).catch(function() {
+            prompt("Sao chép liên kết sau để mở trong Safari/Chrome:", cleanUrl);
+          });
+        } else {
+          prompt("Sao chép liên kết sau để mở trong Safari/Chrome:", cleanUrl);
+        }
+      }
+    }
+
+    // Strip tracking parameters (fbclid, utm_*, mibextid) to preserve edge caching on Google Apps Script
+    var urlParams = new URLSearchParams(window.location.search || "");
+    urlParams.delete("fbclid");
+    urlParams.delete("mibextid");
+    urlParams.delete("utm_source");
+    urlParams.delete("utm_medium");
+    urlParams.delete("utm_campaign");
+    urlParams.delete("utm_content");
+    urlParams.delete("utm_term");
+
+    var cleanQuery = urlParams.toString();
     var hash = window.location.hash || "";
     var targetUrl = gasBaseUrl;
-    if (search) {
-      targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + search.substring(1);
+    if (cleanQuery) {
+      targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     if (hash) {
       targetUrl += hash;
