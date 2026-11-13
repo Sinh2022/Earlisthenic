@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Earlisthenic — Linear-Phase Audio Ear Training</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #000000;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+    /* Chặn hoàn toàn việc xuất PDF hoặc In màn hình */
+    @media print {
+      html, body {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body oncontextmenu="return false;" onselectstart="return false;" ondragstart="return false;">
+  <iframe 
+    id="app-frame"
+    allow="accelerometer; ambient-light-sensor; autoplay; battery; bluetooth; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; execution-while-not-rendered; execution-while-out-of-viewport; fullscreen; gamepad; geolocation; gyroscope; hid; identity-credentials-get; idle-detection; local-fonts; magnetometer; microphone; midi; otp-credentials; payment; picture-in-picture; publickey-credentials-create; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; storage-access; usb; web-share; window-management; xr-spatial-tracking"
+    allowfullscreen="true"
+    webkitallowfullscreen="true"
+    mozallowfullscreen="true"
+    referrerpolicy="no-referrer-when-downgrade">
+  </iframe>
+
+  <script>
+    var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec";
+    var queryParams = window.location.search || "";
+    document.getElementById("app-frame").src = gasBaseUrl + queryParams;
+
+    // Xóa bộ nhớ tạm khi bấm PrintScreen
+    function clearClipboard() {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText("").catch(function() {});
+      }
+    }
+
+    window.addEventListener("keyup", function(e) {
+      if (e.key === "PrintScreen" || e.keyCode === 44) {
+        clearClipboard();
+      }
+    });
+
+    window.addEventListener("keydown", function(e) {
+      if (
+        e.key === "PrintScreen" || e.keyCode === 44 ||
+        (e.ctrlKey && (e.key === "p" || e.key === "P" || e.key === "s" || e.key === "S" || e.key === "u" || e.key === "U")) ||
+        (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "i" || e.key === "C" || e.key === "c" || e.key === "J" || e.key === "j")) ||
+        (e.metaKey && e.shiftKey && (e.key === "3" || e.key === "4" || e.key === "5")) ||
+        e.key === "F12"
+      ) {
+        e.preventDefault();
+        clearClipboard();
+        return false;
+      }
+    });
+  </script>
+</body>
+</html>
