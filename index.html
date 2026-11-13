@@ -1,9 +1,16 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="description" content="Earlisthenic — Technical Ear Training & Psychoacoustic Frequency Analysis Studio">
+  <meta name="theme-color" content="#161513">
   <title>Earlisthenic — Linear-Phase Audio Ear Training</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
     * {
       margin: 0;
@@ -19,13 +26,14 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background-color: #000000;
+      background-color: #161513;
     }
     iframe {
       width: 100%;
       height: 100%;
       border: none;
       display: block;
+      background-color: #161513;
     }
     /* Chặn hoàn toàn việc xuất PDF hoặc In màn hình */
     @media print {
@@ -47,8 +55,16 @@
 
   <script>
     var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec";
-    var queryParams = window.location.search || "";
-    document.getElementById("app-frame").src = gasBaseUrl + queryParams;
+    var search = window.location.search || "";
+    var hash = window.location.hash || "";
+    var targetUrl = gasBaseUrl;
+    if (search) {
+      targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + search.substring(1);
+    }
+    if (hash) {
+      targetUrl += hash;
+    }
+    document.getElementById("app-frame").src = targetUrl;
 
     // Xóa bộ nhớ tạm khi bấm PrintScreen
     function clearClipboard() {
