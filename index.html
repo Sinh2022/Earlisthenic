@@ -34,6 +34,7 @@
       border: none;
       display: block;
       background-color: #161513;
+      pointer-events: auto;
     }
     #fb-iab-banner {
       display: none;
@@ -162,10 +163,16 @@
     if (cleanQuery) {
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
+    // Cache buster ensuring latest GAS deployment build is fetched immediately
+    var cacheBuster = "_v=" + Date.now();
+    targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBuster;
     if (hash) {
       targetUrl += hash;
     }
-    document.getElementById("app-frame").src = targetUrl;
+    var appFrame = document.getElementById("app-frame");
+    if (appFrame) {
+      appFrame.src = targetUrl;
+    }
 
     // Xóa bộ nhớ tạm khi bấm PrintScreen
     function clearClipboard() {
