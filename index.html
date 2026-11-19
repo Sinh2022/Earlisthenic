@@ -11,8 +11,10 @@
   <!-- High-Performance DNS & TCP/TLS Preconnect Hints for Google Cloud Edge -->
   <link rel="preconnect" href="https://script.google.com" crossorigin>
   <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+  <link rel="preconnect" href="https://accounts.google.com" crossorigin>
   <link rel="dns-prefetch" href="https://script.google.com">
   <link rel="dns-prefetch" href="https://script.googleusercontent.com">
+  <link rel="dns-prefetch" href="https://accounts.google.com">
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
@@ -142,6 +144,8 @@
 
   <iframe 
     id="app-frame"
+    loading="eager"
+    fetchpriority="high"
     allow="accelerometer; ambient-light-sensor; autoplay; battery; bluetooth; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; execution-while-not-rendered; execution-while-out-of-viewport; fullscreen; gamepad; geolocation; gyroscope; hid; identity-credentials-get; idle-detection; local-fonts; magnetometer; microphone; midi; otp-credentials; payment; picture-in-picture; publickey-credentials-create; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; storage-access; usb; web-share; window-management; xr-spatial-tracking"
     allowfullscreen="true"
     webkitallowfullscreen="true"
@@ -203,28 +207,38 @@
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     // 5-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.9.22_" + Math.floor(Date.now() / 300000);
+    var cacheBucket = "_v=2.9.25_" + Math.floor(Date.now() / 300000);
     targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
     if (hash) {
       targetUrl += hash;
     }
 
     var appFrame = document.getElementById("app-frame");
+    var isLoaderHidden = false;
     function hideLoader() {
+      if (isLoaderHidden) return;
+      isLoaderHidden = true;
       var loader = document.getElementById("studio-loader");
       if (loader) {
         loader.style.opacity = "0";
         loader.style.visibility = "hidden";
         setTimeout(function() {
           if (loader.parentNode) loader.parentNode.removeChild(loader);
-        }, 400);
+        }, 320);
       }
     }
 
+    // High-speed immediate handshake: fade loader the instant Earlisthenic fires 'earlisthenic_ready'
+    window.addEventListener("message", function(event) {
+      if (event.data && event.data.type === "earlisthenic_ready") {
+        hideLoader();
+      }
+    });
+
     if (appFrame) {
       appFrame.addEventListener("load", hideLoader);
-      // Fast fallback: if iframe load event is delayed, auto-hide splash after 3.8s
-      setTimeout(hideLoader, 3800);
+      // Fast fallback: if iframe load event is delayed, auto-hide splash after 3.2s
+      setTimeout(hideLoader, 3200);
       appFrame.src = targetUrl;
     }
 
