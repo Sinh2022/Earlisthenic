@@ -1,4 +1,4 @@
-/* Earlisthenic High-Performance Core Engine Bundle v2.10.16 */
+/* Earlisthenic High-Performance Core Engine Bundle v2.10.17 */
 
 /* ==================== [MODULE: AudioEngine.html] ==================== */
 
@@ -4337,7 +4337,12 @@ function highlightInfographicDiscipline(gameId, axisKey) {
       card.classList.remove('ring-2', 'ring-[#B56D4E]', 'border-[#B56D4E]', 'shadow-md');
     }
   });
-  draw6AxisRadarChart(_lastAnalyticsSkillAxes, axisKey);
+  if (typeof draw6AxisRadarChart === 'function') {
+    draw6AxisRadarChart(_lastAnalyticsSkillAxes, axisKey);
+  }
+  if (typeof renderSixAxisMiniMeters === 'function') {
+    renderSixAxisMiniMeters(_lastAnalyticsSkillAxes, axisKey);
+  }
 }
 
 function highlightInfographicFromAxis(axisKey) {
@@ -4351,7 +4356,12 @@ function highlightInfographicFromAxis(axisKey) {
       card.classList.remove('ring-2', 'ring-[#B56D4E]', 'border-[#B56D4E]', 'shadow-md');
     }
   });
-  draw6AxisRadarChart(_lastAnalyticsSkillAxes, axisKey);
+  if (typeof draw6AxisRadarChart === 'function') {
+    draw6AxisRadarChart(_lastAnalyticsSkillAxes, axisKey);
+  }
+  if (typeof renderSixAxisMiniMeters === 'function') {
+    renderSixAxisMiniMeters(_lastAnalyticsSkillAxes, axisKey);
+  }
 }
 
 function clearInfographicHighlight() {
@@ -4359,12 +4369,51 @@ function clearInfographicHighlight() {
   allCards.forEach(card => {
     card.classList.remove('ring-2', 'ring-[#B56D4E]', 'border-[#B56D4E]', 'shadow-md', 'opacity-60');
   });
-  draw6AxisRadarChart(_lastAnalyticsSkillAxes, null);
+  if (typeof draw6AxisRadarChart === 'function') {
+    draw6AxisRadarChart(_lastAnalyticsSkillAxes, null);
+  }
+  if (typeof renderSixAxisMiniMeters === 'function') {
+    renderSixAxisMiniMeters(_lastAnalyticsSkillAxes, null);
+  }
 }
 
 function renderSixAxisMiniMeters(skillAxes, highlightAxisKey) {
-  // Obsolete HUD intentionally eliminated to prevent duplicate scoring scales under Hexagon
-  return;
+  const container = document.getElementById('radar-six-axis-meters');
+  if (!container) return;
+  const axes = [
+    { key: 'freq', label: 'Peak / Cut', color: '#B56D4E', icon: 'fa-wave-square' },
+    { key: 'bass', label: 'Low-End Bass', color: '#5E6B50', icon: 'fa-layer-group' },
+    { key: 'filter', label: 'Filter Slopes', color: '#4E7285', icon: 'fa-sliders' },
+    { key: 'symmetry', label: 'Harmonic Symmetry', color: '#9E7B42', icon: 'fa-arrows-left-right' },
+    { key: 'speed', label: 'Speed Blitz', color: '#D9822B', icon: 'fa-bolt' },
+    { key: 'feedback', label: 'ISO Feedback', color: '#B83E2E', icon: 'fa-shield-halved' }
+  ];
+  const s = skillAxes || {};
+  container.innerHTML = axes.map(a => {
+    const rawVal = Number(s[a.key]) || 0;
+    const isIso = highlightAxisKey === a.key;
+    const isDim = highlightAxisKey && !isIso;
+    const barW = Math.max(0, Math.min(100, rawVal));
+    const valText = rawVal > 0 ? `${rawVal}%` : 'Calibrate';
+    return `
+      <div data-meter-axis="${a.key}" 
+           onmouseenter="highlightInfographicFromAxis('${a.key}')" 
+           onmouseleave="clearInfographicHighlight()"
+           class="p-1 rounded-lg transition-all cursor-pointer ${isIso ? 'bg-black/[0.06] dark:bg-white/[0.08] ring-1 ring-[#B56D4E]' : (isDim ? 'opacity-40' : 'hover:bg-black/[0.03] dark:hover:bg-white/[0.04]')}"
+           title="${a.label}: ${rawVal}% proficiency">
+        <div class="flex items-center justify-between text-[9px] font-mono-tabular mb-0.5">
+          <span class="font-semibold text-[#302D28] dark:text-[#EAE2D4] truncate flex items-center gap-1">
+            <i class="fa-solid ${a.icon} text-[8px]" style="color: ${a.color}"></i>
+            <span>${a.label}</span>
+          </span>
+          <span class="font-bold text-[9px] ${rawVal > 0 ? 'text-[#302D28] dark:text-[#EAE2D4]' : 'text-[#6E675B] dark:text-[#A89F91]'} shrink-0">${valText}</span>
+        </div>
+        <div class="w-full h-1 bg-black/[0.06] dark:bg-white/[0.08] rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-300" style="width: ${barW}%; background-color: ${a.color};"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 let _lastAnalyticsSeries = null;
@@ -4498,8 +4547,8 @@ function renderSpiAnalyticsDashboard(options) {
   const gGrid = document.getElementById('stats-per-game-grid');
   if (gGrid) {
     const gMeta = {
-      peak: { icon: 'fa-wave-square', color: '#B56D4E', axisName: 'Peak / Cut EQ', axisKey: 'freq' },
-      cut: { icon: 'fa-scissors', color: '#B56D4E', axisName: 'Peak / Cut EQ', axisKey: 'freq' },
+      peak: { icon: 'fa-wave-square', color: '#B56D4E', axisName: 'Peaking Boost', axisKey: 'freq' },
+      cut: { icon: 'fa-scissors', color: '#B56D4E', axisName: 'Peaking Cut', axisKey: 'freq' },
       bass: { icon: 'fa-layer-group', color: '#5E6B50', axisName: 'Low-End Bass', axisKey: 'bass' },
       mirror: { icon: 'fa-arrows-left-right', color: '#9E7B42', axisName: 'Harmonic Symmetry', axisKey: 'symmetry' },
       knight: { icon: 'fa-chess-knight', color: '#8E5A78', axisName: 'Curve Chroma', axisKey: 'filter' },
@@ -4524,7 +4573,7 @@ function renderSpiAnalyticsDashboard(options) {
       const accBarColor = accVal >= 80 ? 'bg-[#5E6B50]' : (accVal >= 50 ? 'bg-[#9E7B42]' : 'bg-[#B56D4E]');
 
       return `
-        <div data-game-id="${g.id}" data-axis="${meta.axisKey}" onmouseenter="highlightInfographicDiscipline('${g.id}', '${meta.axisKey}')" onmouseleave="clearInfographicHighlight()" class="module-card-${g.id} p-3 sm:p-3.5 rounded-xl border border-black/[0.08] dark:border-[#394036] flex flex-col justify-between gap-2.5 bg-white dark:bg-[#202620] shadow-xs hover:shadow-md transition-all cursor-pointer group">
+        <div data-game-id="${g.id}" data-axis="${meta.axisKey}" onclick="launchGameFromLobby('${g.id}')" onmouseenter="highlightInfographicDiscipline('${g.id}', '${meta.axisKey}')" onmouseleave="clearInfographicHighlight()" class="module-card-${g.id} p-3 sm:p-3.5 rounded-xl border border-black/[0.08] dark:border-[#394036] flex flex-col justify-between gap-2.5 bg-white dark:bg-[#202620] shadow-xs hover:shadow-md transition-all cursor-pointer group">
           <div class="flex items-center justify-between gap-2 border-b border-black/[0.05] dark:border-white/[0.06] pb-2">
             <div class="flex items-center gap-2 min-w-0">
               <div class="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold text-white shrink-0 shadow-xs" style="background-color: ${meta.color}">
@@ -4546,12 +4595,18 @@ function renderSpiAnalyticsDashboard(options) {
             <div>
               <span class="text-[9px] font-bold uppercase tracking-wider font-mono-tabular text-[#596052] dark:text-[#A0A597] block">Best Score</span>
               <div class="text-xl sm:text-2xl font-extrabold font-mono-tabular text-[#171915] dark:text-[#ECEBE2] tracking-tight">
-                ${(r.highScore || 0).toLocaleString()}
+                ${(r.highScore || 0) > 0 ? (r.highScore).toLocaleString() : '<span class="text-xs uppercase tracking-wider font-bold text-[#B56D4E] dark:text-[#DFA58D]">READY</span>'}
               </div>
             </div>
-            <span class="text-[10px] font-mono-tabular font-bold px-2 py-0.5 rounded-md ${deltaClass} shrink-0">
-              ${dVal >= 0 ? '+' : ''}${dVal} Δ
-            </span>
+            ${(r.highScore || 0) > 0 ? `
+              <span class="text-[10px] font-mono-tabular font-bold px-2 py-0.5 rounded-md ${deltaClass} shrink-0">
+                ${dVal >= 0 ? '+' : ''}${dVal} Δ
+              </span>
+            ` : `
+              <span class="text-[10px] font-mono-tabular font-bold px-2 py-0.5 rounded-md bg-[#B56D4E]/10 dark:bg-[#B56D4E]/20 text-[#B56D4E] dark:text-[#DFA58D] border border-[#B56D4E]/30 shrink-0 uppercase">
+                CALIBRATE
+              </span>
+            `}
           </div>
 
           <div class="space-y-1">
@@ -4566,7 +4621,10 @@ function renderSpiAnalyticsDashboard(options) {
 
           <div class="flex items-center justify-between pt-2 border-t border-black/[0.04] dark:border-white/[0.05] text-[10px] font-mono-tabular text-[#596052] dark:text-[#A0A597]">
             <span>Practice</span>
-            <span class="font-semibold text-[#30352E] dark:text-[#C6C8BB] truncate">${r.sessionsCompleted || 0} sess · ${mins}m${r.isAllTimeFallback ? ' (all-time)' : ''}</span>
+            <div class="flex items-center gap-1.5">
+              <span class="font-semibold text-[#30352E] dark:text-[#C6C8BB] truncate">${r.sessionsCompleted || 0} sess · ${mins}m${r.isAllTimeFallback ? ' (all-time)' : ''}</span>
+              <span class="text-[10px] font-bold text-[#B56D4E] group-hover:underline">Train &rarr;</span>
+            </div>
           </div>
         </div>
       `;
@@ -6107,6 +6165,32 @@ function applyLoadedProgressDocument(doc) {
   }
   appState.data.recentBehaviorEvents = Array.isArray(doc.recentBehaviorEvents) ? doc.recentBehaviorEvents : [];
   appState.data.weeklyMockPlans = Object.assign(createDefaultWeeklyMockPlansClient(), doc.weeklyMockPlans || {});
+
+  // Defunct Game Sanitization: permanently eradicate lingering Sonar Beast references
+  if (appState.data.weeklyMockPlans) {
+    for (const plan of Object.values(appState.data.weeklyMockPlans)) {
+      if (plan && plan.stages && 'sonar' in plan.stages) {
+        delete plan.stages.sonar;
+        if (!plan.stages.cheetah) plan.stages.cheetah = 2;
+      }
+    }
+  }
+  if (appState.data.gameStats && 'sonar' in appState.data.gameStats) {
+    delete appState.data.gameStats.sonar;
+  }
+  if (Array.isArray(appState.data.mockExamHistory)) {
+    appState.data.mockExamHistory.forEach(exam => {
+      if (exam && Array.isArray(exam.perGameBreakdown)) {
+        exam.perGameBreakdown = exam.perGameBreakdown.filter(b => b.gameId !== 'sonar');
+      }
+      if (exam && Array.isArray(exam.questionResults)) {
+        exam.questionResults = exam.questionResults.filter(q => q.gameId !== 'sonar');
+      }
+      if (exam && exam.config && exam.config.stages && 'sonar' in exam.config.stages) {
+        delete exam.config.stages.sonar;
+      }
+    });
+  }
   if (doc && doc.userProfile && typeof doc.userProfile === 'object') {
     appState.data.userProfile = Object.assign({
       role: 'guest',
@@ -9492,6 +9576,18 @@ function renderDailyWorkoutCircuit() {
   if (sumEl) sumEl.textContent = `${plan.title} (${totalQ} Q • ${stageKeys.length} modules)`;
 }
 
+function startDailyWorkout() {
+  const circuitMap = getTodayCircuitCompletionMap();
+  const dailyKeys = ['peak', 'bass', 'feedback'];
+  for (let i = 0; i < dailyKeys.length; i++) {
+    if (!circuitMap[dailyKeys[i]]) {
+      launchGameFromLobby(dailyKeys[i]);
+      return;
+    }
+  }
+  launchGameFromLobby('peak');
+}
+
 /********************************************************************
  * DASHBOARD STATS SUMMARY & EVERYDAY KNOWLEDGE (MIXING & MASTERING)
  ********************************************************************/
@@ -11763,7 +11859,7 @@ function bootstrapEarlisthenic() {
   } catch (e) { console.warn('ResizeObserver warn:', e); }
 
 function broadcastEarlisthenicReady() {
-  const payload = { type: 'earlisthenic_ready', version: '2.10.16' };
+  const payload = { type: 'earlisthenic_ready', version: '2.10.17' };
   try {
     if (window.parent) {
       window.parent.postMessage(payload, '*');
