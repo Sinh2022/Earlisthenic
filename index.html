@@ -5,8 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="description" content="Earlisthenic — Technical Ear Training & Psychoacoustic Frequency Analysis Studio">
-  <meta name="theme-color" content="#161513">
+  <meta name="theme-color" content="#191D19">
   <title>Earlisthenic — Linear-Phase Audio Ear Training</title>
+
+  <script>
+    (function() {
+      try {
+        var saved = localStorage.getItem('earlisthenic_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var isDark = saved === 'dark' || (saved !== 'light' && prefersDark);
+        if (isDark) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      } catch (e) {}
+    })();
+  </script>
 
   <!-- High-Performance DNS & TCP/TLS Preconnect Hints for Google Cloud Edge -->
   <link rel="preconnect" href="https://script.google.com" crossorigin>
@@ -32,14 +47,19 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background-color: #161513;
+      background-color: #F4F0E7;
+      color: #171915;
+    }
+    html.dark, html.dark body {
+      background-color: #191D19;
+      color: #ECEBE2;
     }
     iframe {
       width: 100%;
       height: 100%;
       border: none;
       display: block;
-      background-color: #161513;
+      background-color: transparent;
       pointer-events: auto;
     }
     #fb-iab-banner {
@@ -86,7 +106,7 @@
     #studio-loader {
       position: fixed;
       inset: 0;
-      background-color: #161513;
+      background-color: #F4F0E7;
       z-index: 99999;
       display: flex;
       flex-direction: column;
@@ -94,6 +114,39 @@
       justify-content: center;
       gap: 16px;
       transition: opacity 0.35s ease, visibility 0.35s ease;
+    }
+    html.dark #studio-loader {
+      background-color: #191D19;
+    }
+    .studio-loader-title {
+      color: #171915;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      margin-bottom: 4px;
+    }
+    html.dark .studio-loader-title {
+      color: #ECEBE2;
+    }
+    .studio-loader-sub {
+      color: #596052;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    html.dark .studio-loader-sub {
+      color: #A0A597;
+    }
+    .studio-loader-track {
+      width: 130px;
+      height: 3px;
+      background: rgba(0, 0, 0, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+    html.dark .studio-loader-track {
+      background: rgba(255, 255, 255, 0.08);
     }
     @keyframes studioPulse {
       0% { left: -40%; width: 30%; }
@@ -118,10 +171,10 @@
       </svg>
     </div>
     <div style="text-align:center;">
-      <h1 style="color:#ECEBE2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;font-weight:700;letter-spacing:1.5px;margin-bottom:4px;">EARLISTHENIC</h1>
-      <p style="color:#8D9484;font-family:monospace;font-size:11px;">Linear-Phase Audio Frequency Lab</p>
+      <h1 class="studio-loader-title">EARLISTHENIC</h1>
+      <p class="studio-loader-sub">Linear-Phase Audio Frequency Lab</p>
     </div>
-    <div style="width:130px;height:3px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;position:relative;">
+    <div class="studio-loader-track">
       <div style="position:absolute;top:0;left:0;bottom:0;width:35%;background:linear-gradient(90deg,#B56D4E,#DFA58D);border-radius:999px;animation:studioPulse 1.1s infinite ease-in-out;"></div>
     </div>
   </div>
@@ -207,7 +260,7 @@
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     // 5-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.10.10_" + Math.floor(Date.now() / 300000);
+    var cacheBucket = "_v=2.10.11_" + Math.floor(Date.now() / 300000);
     targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
     if (hash) {
       targetUrl += hash;
@@ -224,7 +277,7 @@
         loader.style.visibility = "hidden";
         setTimeout(function() {
           if (loader.parentNode) loader.parentNode.removeChild(loader);
-        }, 320);
+        }, 360);
       }
     }
 
@@ -235,10 +288,10 @@
       }
     });
 
+    // Fallback safety watchdog: auto-hide splash only if handshake takes longer than 6.5s
+    setTimeout(hideLoader, 6500);
+
     if (appFrame) {
-      appFrame.addEventListener("load", hideLoader);
-      // Fast fallback: if iframe load event is delayed, auto-hide splash after 3.2s
-      setTimeout(hideLoader, 3200);
       appFrame.src = targetUrl;
     }
 
