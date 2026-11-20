@@ -1,4 +1,4 @@
-/* Earlisthenic High-Performance Core Engine Bundle v2.10.17 */
+/* Earlisthenic High-Performance Core Engine Bundle v2.10.18 */
 
 /* ==================== [MODULE: AudioEngine.html] ==================== */
 
@@ -30,6 +30,70 @@ const LINEAR_PHASE_FFT_SIZE = 8192;
 const LINEAR_PHASE_TAPS = 8191; // Odd length => exact integer center sample M = 4095
 const LINEAR_PHASE_CENTER = (LINEAR_PHASE_TAPS - 1) / 2;
 const LINEAR_HEADROOM_GAIN = Math.pow(10, -3.5 / 20); // -3.5 dB static headroom
+
+const EARLISTHENIC_FIR_PROCESSOR_SOURCE = `
+class EarlisthenicFirProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.taps = null;
+    this.bufferL = new Float32Array(16384);
+    this.bufferR = new Float32Array(16384);
+    this.writeIndex = 0;
+    this.bypass = true;
+    this.gain = 1.0;
+    this.port.onmessage = (event) => {
+      const data = event.data;
+      if (!data) return;
+      if (data.type === 'SET_COEFFICIENTS') {
+        this.taps = (data.coefficients && data.coefficients.length > 0) ? new Float32Array(data.coefficients) : null;
+        this.bypass = !this.taps || this.taps.length === 0;
+      } else if (data.type === 'SET_BYPASS') {
+        this.bypass = !!data.bypass;
+      } else if (data.type === 'SET_GAIN') {
+        this.gain = typeof data.gain === 'number' ? data.gain : 1.0;
+      }
+    };
+  }
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    const output = outputs[0];
+    if (!input || !input.length) return true;
+    const inL = input[0];
+    const inR = input.length > 1 ? input[1] : inL;
+    const outL = output[0];
+    const outR = output.length > 1 ? output[1] : outL;
+    const blockSize = inL.length;
+    if (this.bypass || !this.taps || this.taps.length === 0) {
+      for (let i = 0; i < blockSize; i++) {
+        outL[i] = inL[i] * this.gain;
+        outR[i] = inR[i] * this.gain;
+      }
+      return true;
+    }
+    const taps = this.taps;
+    const numTaps = taps.length;
+    const bufLen = this.bufferL.length;
+    const bufMask = bufLen - 1;
+    for (let i = 0; i < blockSize; i++) {
+      this.bufferL[this.writeIndex] = inL[i];
+      this.bufferR[this.writeIndex] = inR[i];
+      let sumL = 0.0;
+      let sumR = 0.0;
+      for (let t = 0; t < numTaps; t++) {
+        const readIdx = (this.writeIndex - t + bufLen) & bufMask;
+        const c = taps[t];
+        sumL += this.bufferL[readIdx] * c;
+        sumR += this.bufferR[readIdx] * c;
+      }
+      outL[i] = sumL * this.gain;
+      outR[i] = sumR * this.gain;
+      this.writeIndex = (this.writeIndex + 1) & bufMask;
+    }
+    return true;
+  }
+}
+registerProcessor('earlisthenic-fir-processor', EarlisthenicFirProcessor);
+`;
 
 const SUPPORTED_SAMPLE_RATES = [44100, 48000, 88200, 96000, 176400, 192000];
 const SUPPORTED_BIT_DEPTHS = ['64f', '32f', '24', '16'];
@@ -89,6 +153,13 @@ class EarlisthenicAudioEngine {
     this.directBypassGainNode = null;
     this.activeConvolverSlot = 'A';
     this.flatBypassBuffer = null;
+
+    // High-Performance AudioWorklet real-time audio thread processor
+    this.workletNode = null;
+    this.workletGain = null;
+    this.useWorklet = false;
+    this._workletLoaded = false;
+    this._workletLoading = false;
 
     // Zero-latency lock-free Biquad sweep path for glitch-free 60-240fps interactive sweeps
     this.sweepFilter1 = null;
@@ -276,6 +347,11 @@ class EarlisthenicAudioEngine {
       this.eqGainA = null;
       this.eqGainB = null;
       this.directBypassGainNode = null;
+      this.workletNode = null;
+      this.workletGain = null;
+      this.useWorklet = false;
+      this._workletLoaded = false;
+      this._workletLoading = false;
       this.sweepFilter1 = null;
       this.sweepFilter2 = null;
       this.sweepGainNode = null;
@@ -428,6 +504,17 @@ class EarlisthenicAudioEngine {
     this.sweepFilter1.connect(this.sweepFilter2);
     this.sweepFilter2.connect(this.sweepGainNode);
     this.sweepGainNode.connect(this.pannerNode);
+
+    if (typeof ctx.createGain === 'function') {
+      try {
+        this.workletGain = ctx.createGain();
+        this.workletGain.gain.value = 0.0;
+        this.workletGain.connect(this.pannerNode);
+      } catch (e) {
+        this.workletGain = null;
+      }
+    }
+    this._initAudioWorklet();
 
     this.pannerNode.connect(this.postSumNode);
     this.postSumNode.connect(this.postEqAnalyser);
@@ -1021,6 +1108,37 @@ class EarlisthenicAudioEngine {
     }
   }
 
+  async _initAudioWorklet() {
+    const ctx = this.audioCtx;
+    if (!ctx || !ctx.audioWorklet || typeof ctx.audioWorklet.addModule !== 'function') return;
+    if (this._workletLoaded || this._workletLoading) return;
+    this._workletLoading = true;
+    try {
+      let moduleUrl;
+      if (typeof Blob !== 'undefined' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const blob = new Blob([EARLISTHENIC_FIR_PROCESSOR_SOURCE], { type: 'application/javascript' });
+        moduleUrl = URL.createObjectURL(blob);
+      } else {
+        moduleUrl = 'dist/earlisthenic-fir-processor.js';
+      }
+      await ctx.audioWorklet.addModule(moduleUrl);
+      if (typeof moduleUrl === 'string' && moduleUrl.startsWith('blob:') && typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(moduleUrl);
+      }
+      if (typeof AudioWorkletNode === 'function' && this.inputTrimNode && this.workletGain) {
+        this.workletNode = new AudioWorkletNode(ctx, 'earlisthenic-fir-processor');
+        this.inputTrimNode.connect(this.workletNode);
+        this.workletNode.connect(this.workletGain);
+        this.useWorklet = true;
+        this._workletLoaded = true;
+      }
+    } catch (err) {
+      this.useWorklet = false;
+    } finally {
+      this._workletLoading = false;
+    }
+  }
+
   /**
    * Crossfades to the supplied stereo FIR buffer using the inactive convolver slot (or from the live sweep bus).
    */
@@ -1047,6 +1165,15 @@ class EarlisthenicAudioEngine {
     directGain.linearRampToValueAtTime(1.0, now + xfadeSec);
     this.eqGainA.gain.linearRampToValueAtTime(0.0, now + xfadeSec);
     this.eqGainB.gain.linearRampToValueAtTime(0.0, now + xfadeSec);
+
+    if (this.workletGain && this.workletGain.gain) {
+      this.workletGain.gain.cancelScheduledValues(now);
+      this.workletGain.gain.setValueAtTime(this.workletGain.gain.value, now);
+      this.workletGain.gain.linearRampToValueAtTime(0.0, now + xfadeSec);
+    }
+    if (this.workletNode && this.workletNode.port) {
+      try { this.workletNode.port.postMessage({ type: 'SET_BYPASS', bypass: true }); } catch (e) {}
+    }
 
     if (fromSweepBus && this.sweepGainNode) {
       this.sweepGainNode.gain.cancelScheduledValues(now);
@@ -1090,6 +1217,12 @@ class EarlisthenicAudioEngine {
       directGain.cancelScheduledValues(now);
       directGain.setValueAtTime(directGain.value, now);
       directGain.linearRampToValueAtTime(0.0, now + xfadeSec);
+    }
+
+    if (this.useWorklet && this.workletGain && this.workletGain.gain) {
+      this.workletGain.gain.cancelScheduledValues(now);
+      this.workletGain.gain.setValueAtTime(this.workletGain.gain.value, now);
+      this.workletGain.gain.linearRampToValueAtTime(1.0, now + xfadeSec);
     }
 
     if (fromSweepBus && this.sweepGainNode) {
@@ -1205,6 +1338,9 @@ class EarlisthenicAudioEngine {
       this._lastFirSignature = targetSig;
       this._lastFirSwapMs = performance.now();
       if (targetResolved.isFlat) {
+        if (this.useWorklet && this.workletNode && this.workletNode.port) {
+          try { this.workletNode.port.postMessage({ type: 'SET_BYPASS', bypass: true }); } catch (e) {}
+        }
         this._activateDirectBypassClickFree(fromSweep);
       } else {
         const sr = this.audioCtx.sampleRate || 48000;
@@ -1213,6 +1349,12 @@ class EarlisthenicAudioEngine {
           sr,
           this._reusableFirKernel
         );
+        if (this.useWorklet && this.workletNode && this.workletNode.port) {
+          try {
+            this.workletNode.port.postMessage({ type: 'SET_COEFFICIENTS', coefficients: Array.from(kernel) });
+            this.workletNode.port.postMessage({ type: 'SET_BYPASS', bypass: false });
+          } catch (e) {}
+        }
         const buf = this._createStereoFirAudioBuffer(kernel, sr);
         this._swapConvolverBufferClickFree(buf, fromSweep);
       }
@@ -2220,7 +2362,84 @@ class EarlisthenicSourceManager {
       warnings: warnings
     };
     this.sourceMode = 'file';
+    this.persistCustomTrackToOPFS(arrayBuffer, this.customFileMeta).catch(() => {});
     return this.customFileMeta;
+  }
+
+  /**
+   * Persists the custom local track to Origin Private File System (OPFS) for persistent, instant offline loading.
+   */
+  async persistCustomTrackToOPFS(arrayBuffer, meta) {
+    if (typeof navigator === 'undefined' || !navigator.storage || typeof navigator.storage.getDirectory !== 'function') {
+      return false;
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('earlisthenic_audio', { create: true });
+      const fileHandle = await dir.getFileHandle('custom_track.dat', { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(arrayBuffer);
+      await writable.close();
+
+      const metaHandle = await dir.getFileHandle('custom_meta.json', { create: true });
+      const metaWritable = await metaHandle.createWritable();
+      await metaWritable.write(JSON.stringify(meta));
+      await metaWritable.close();
+      return true;
+    } catch (opfsErr) {
+      return false;
+    }
+  }
+
+  /**
+   * Restores a previously saved custom track from Origin Private File System (OPFS).
+   */
+  async restoreCustomTrackFromOPFS(audioCtx) {
+    if (typeof navigator === 'undefined' || !navigator.storage || typeof navigator.storage.getDirectory !== 'function') {
+      return null;
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('earlisthenic_audio', { create: false });
+      const fileHandle = await dir.getFileHandle('custom_track.dat', { create: false });
+      const metaHandle = await dir.getFileHandle('custom_meta.json', { create: false });
+
+      const file = await fileHandle.getFile();
+      const metaFile = await metaHandle.getFile();
+      const metaText = await metaFile.text();
+      const meta = JSON.parse(metaText);
+
+      const arrayBuffer = await file.arrayBuffer();
+      const ctx = audioCtx || (this.engine && this.engine.ensureContext());
+      if (!ctx) return null;
+      const decodedBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+
+      this.customRawBytes = arrayBuffer;
+      this.customAudioBuffer = decodedBuffer;
+      this.customFileMeta = meta;
+      this.sourceMode = 'file';
+      return meta;
+    } catch (opfsErr) {
+      return null;
+    }
+  }
+
+  /**
+   * Purges the stored custom track from OPFS.
+   */
+  async clearCustomTrackFromOPFS() {
+    if (typeof navigator === 'undefined' || !navigator.storage || typeof navigator.storage.getDirectory !== 'function') {
+      return false;
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('earlisthenic_audio', { create: false });
+      await dir.removeEntry('custom_track.dat').catch(() => {});
+      await dir.removeEntry('custom_meta.json').catch(() => {});
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -2230,6 +2449,7 @@ class EarlisthenicSourceManager {
     this.customAudioBuffer = null;
     this.customRawBytes = null;
     this.customFileMeta = null;
+    this.clearCustomTrackFromOPFS().catch(() => {});
     if (this.sourceMode === 'file') {
       this.sourceMode = 'studio';
     }
@@ -2490,6 +2710,60 @@ function getPsychoacousticBandFactor(freqHz, gameMode) {
   };
 }
 
+/**
+ * 7 Critical Studio Frequency Bands for Item Response Theory (IRT) & Blind-Spot Diagnostics
+ */
+const PSYCHOACOUSTIC_CRITICAL_BANDS = [
+  { id: 'sub_bass',   name: 'Sub Bass',     fMin: 20,    fMax: 60,    label: '20–60 Hz' },
+  { id: 'low_bass',   name: 'Bass',         fMin: 60,    fMax: 250,   label: '60–250 Hz' },
+  { id: 'low_mids',   name: 'Low Mids',     fMin: 250,   fMax: 500,   label: '250–500 Hz' },
+  { id: 'midrange',   name: 'Midrange',     fMin: 500,   fMax: 2000,  label: '500 Hz–2 kHz' },
+  { id: 'high_mids',  name: 'High Mids',    fMin: 2000,  fMax: 4000,  label: '2–4 kHz' },
+  { id: 'presence',   name: 'Presence',     fMin: 4000,  fMax: 6000,  label: '4–6 kHz' },
+  { id: 'brilliance', name: 'Brilliance',   fMin: 6000,  fMax: 20000, label: '6–20 kHz' }
+];
+
+function getBandForFrequency(freqHz) {
+  const f = Math.max(20, Math.min(20000, Number(freqHz) || 1000));
+  for (let i = 0; i < PSYCHOACOUSTIC_CRITICAL_BANDS.length; i++) {
+    const b = PSYCHOACOUSTIC_CRITICAL_BANDS[i];
+    if (f >= b.fMin && f < b.fMax) return b;
+  }
+  return PSYCHOACOUSTIC_CRITICAL_BANDS[PSYCHOACOUSTIC_CRITICAL_BANDS.length - 1];
+}
+
+const _psychoacousticBandCalibration = {};
+PSYCHOACOUSTIC_CRITICAL_BANDS.forEach(b => {
+  _psychoacousticBandCalibration[b.id] = { trials: 0, correct: 0, totalAcc: 0, totalErrorCents: 0, avgAcc: 100, avgErrorCents: 0 };
+});
+
+function recordPsychoacousticTrial(freqHz, accuracyPct, errorCents) {
+  const band = getBandForFrequency(freqHz);
+  if (!band) return;
+  const stat = _psychoacousticBandCalibration[band.id];
+  if (!stat) return;
+  stat.trials++;
+  if (accuracyPct >= 70) stat.correct++;
+  stat.totalAcc += Math.max(0, Math.min(100, accuracyPct));
+  stat.totalErrorCents += Math.max(0, errorCents || 0);
+  stat.avgAcc = Math.round(stat.totalAcc / stat.trials);
+  stat.avgErrorCents = Math.round(stat.totalErrorCents / stat.trials);
+}
+
+function getAcousticBlindSpotBands() {
+  const list = PSYCHOACOUSTIC_CRITICAL_BANDS.map(b => {
+    const stat = _psychoacousticBandCalibration[b.id] || { trials: 0, avgAcc: 100 };
+    return {
+      band: b,
+      trials: stat.trials,
+      avgAcc: stat.avgAcc,
+      priority: stat.trials === 0 ? 80 : (100 - stat.avgAcc)
+    };
+  });
+  list.sort((a, b) => b.priority - a.priority);
+  return list.map(item => item.band);
+}
+
 // Starting 6-Curve Multi-Band Preset Library for EQ Knight
 const KNIGHT_CURVES = [
   {
@@ -2632,10 +2906,33 @@ function generateQuestionTarget(gameMode, level, mockConfig) {
   } else {
     const fMin = (mockConfig && mockConfig.blindFft) ? 60 : (lvlSpec.freqMin || 80);
     const fMax = (mockConfig && mockConfig.blindFft) ? 14000 : (lvlSpec.freqMax || 12000);
-    const minL = Math.log10(fMin);
-    const maxL = Math.log10(fMax);
-    target.frequencyHz = Math.round(Math.pow(10, minL + activeRngFn() * (maxL - minL)));
     target.freqRange = [fMin, fMax];
+
+    let chosenHz = null;
+    // Adaptive Psychoacoustic IRT: 35% probability at Level 3+ to diagnose and train personal ear blind-spots
+    if (safeLevel >= 3 && typeof activeRngFn === 'function' && activeRngFn() < 0.35) {
+      const blindBands = getAcousticBlindSpotBands();
+      for (let i = 0; i < blindBands.length; i++) {
+        const b = blindBands[i];
+        const overlapMin = Math.max(fMin, b.fMin);
+        const overlapMax = Math.min(fMax, b.fMax);
+        if (overlapMin < overlapMax) {
+          const minL = Math.log10(overlapMin);
+          const maxL = Math.log10(overlapMax);
+          chosenHz = Math.round(Math.pow(10, minL + activeRngFn() * (maxL - minL)));
+          target.isAdaptiveBlindSpot = true;
+          target.blindSpotBand = b.name;
+          break;
+        }
+      }
+    }
+
+    if (!chosenHz) {
+      const minL = Math.log10(fMin);
+      const maxL = Math.log10(fMax);
+      chosenHz = Math.round(Math.pow(10, minL + activeRngFn() * (maxL - minL)));
+    }
+    target.frequencyHz = chosenHz;
   }
 
   // Apply ISO-226 psychoacoustic compensation for gain & Q so extreme frequencies stay audible
@@ -3145,6 +3442,10 @@ function scoreQuestionSubmission(params) {
     }
   }
 
+  if (gameMode !== 'knight') {
+    recordPsychoacousticTrial(safeTargetFreq, finalAcc, frequencyErrorCents);
+  }
+
   return {
     status: passed ? 'correct' : (isNearMiss ? 'near_miss' : (isTimeout ? 'timeout' : 'incorrect')),
     passed: passed,
@@ -3155,7 +3456,8 @@ function scoreQuestionSubmission(params) {
     spiDelta: spiDelta,
     habitWeightApplied: safeHabitWeight,
     errors: errors,
-    feedbackDetail: feedbackDetail
+    feedbackDetail: feedbackDetail,
+    psychoacousticBand: getBandForFrequency(safeTargetFreq).name
   };
 }
 
@@ -7612,6 +7914,15 @@ function switchAudioSourceMode(mode) {
       drawGlobalWaveform();
       if (appState.isPlaying) startAudioPlayback();
     } else {
+      if (typeof sgSourceManager.restoreCustomTrackFromOPFS === 'function') {
+        sgSourceManager.restoreCustomTrackFromOPFS().then(meta => {
+          if (meta && sgSourceManager.customAudioBuffer) {
+            updateWaveformLoopUI();
+            drawGlobalWaveform();
+            updateTransportPlayUI();
+          }
+        }).catch(() => {});
+      }
       stopAudioPlayback();
       updateTransportPlayUI();
     }
@@ -8234,6 +8545,7 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap) {
     appState.playbackAnchorLoopStartSec = targetLoopStart;
     appState.playbackAnchorLoopEndSec = targetLoopEnd;
     appState.isPlaying = true;
+    ensureStudioAnimationLoopRunning();
     applyCurrentArenaDspToEngine();
     updateTransportPlayUI();
     syncAudioFormatControlsUI();
@@ -9366,6 +9678,9 @@ function switchMainView(view) {
       renderSpiAnalyticsDashboard();
     }
   } else if (nextView === 'arena') {
+    if (typeof ensureStudioAnimationLoopRunning === 'function') {
+      ensureStudioAnimationLoopRunning();
+    }
     const libSection = document.getElementById('arena-exercise-library');
     const deckSection = document.getElementById('arena-interactive-deck');
     const shouldShowDeck = Boolean(appState.mockExamActive || appState.arenaDeckVisible);
@@ -11012,6 +11327,12 @@ function renderStudioAnimationFrame() {
     return;
   }
 
+  // Idle conservation: if not playing audio and not inspecting live spectrum stage, pause rAF loop
+  if (!appState.isPlaying && appState.currentView !== 'arena') {
+    _studioRafRunning = false;
+    return;
+  }
+
   // Update transport waveform playhead & peak meter when playing
   if (appState.isPlaying && sgAudioEngine.audioCtx) {
     const buf = sgSourceManager.getActiveBuffer();
@@ -11859,7 +12180,7 @@ function bootstrapEarlisthenic() {
   } catch (e) { console.warn('ResizeObserver warn:', e); }
 
 function broadcastEarlisthenicReady() {
-  const payload = { type: 'earlisthenic_ready', version: '2.10.17' };
+  const payload = { type: 'earlisthenic_ready', version: '2.10.18' };
   try {
     if (window.parent) {
       window.parent.postMessage(payload, '*');

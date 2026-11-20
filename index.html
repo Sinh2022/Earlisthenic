@@ -40,7 +40,7 @@
   <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
 
   <!-- Core Engine CDN Preload: Stream the compressed 92 KB bundle upfront in parallel -->
-  <link rel="preload" href="dist/earlisthenic-core.js?v=2.10.17" as="script" crossorigin>
+  <link rel="preload" href="dist/earlisthenic-core.js?v=2.10.18" as="script" crossorigin>
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
@@ -239,7 +239,7 @@
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     // 5-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.10.17_" + Math.floor(Date.now() / 300000);
+    var cacheBucket = "_v=2.10.18_" + Math.floor(Date.now() / 300000);
     targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
     if (hash) {
       targetUrl += hash;
