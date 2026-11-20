@@ -11763,14 +11763,14 @@ function bootstrapEarlisthenic() {
   } catch (e) { console.warn('ResizeObserver warn:', e); }
 
 function broadcastEarlisthenicReady() {
-  const payload = { type: 'earlisthenic_ready', version: '2.10.12' };
+  const payload = { type: 'earlisthenic_ready', version: '2.10.16' };
   try {
-    if (window.parent && window.parent !== window) {
+    if (window.parent) {
       window.parent.postMessage(payload, '*');
     }
   } catch (e) {}
   try {
-    if (window.top && window.top !== window && window.top !== window.parent) {
+    if (window.top) {
       window.top.postMessage(payload, '*');
     }
   } catch (e) {}

@@ -303,8 +303,8 @@
       }
     });
 
-    // Fallback safety watchdog: auto-hide splash only if handshake takes longer than 4.0s
-    setTimeout(hideLoader, 4000);
+    // Fallback safety watchdog: keep splash active until inner app signals ready (max 8.0s safety bound)
+    setTimeout(hideLoader, 8000);
 
     // Anti-screen capture clipboard clearing
     function clearClipboard() {
