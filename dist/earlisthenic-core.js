@@ -1,4 +1,4 @@
-/* Earlisthenic High-Performance Core Engine Bundle v2.10.14 */
+/* Earlisthenic High-Performance Core Engine Bundle v2.10.16 */
 
 /* ==================== [MODULE: AudioEngine.html] ==================== */
 
@@ -8502,49 +8502,55 @@ if (_freeAudioUploadInputEl) {
   });
 }
 
-document.getElementById('audio-file-input').addEventListener('change', async (e) => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  markUserTrainingInteraction();
+function initAudioFileInputHandler() {
+  const fileInput = document.getElementById('audio-file-input');
+  if (!fileInput || fileInput._changeHandlerAttached) return;
+  fileInput._changeHandlerAttached = true;
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    markUserTrainingInteraction();
 
-  const metaEl = document.getElementById('file-source-meta');
-  if (metaEl) {
-    metaEl.textContent = `Decoding "${file.name}"…`;
-    metaEl.title = `Decoding ${file.name}`;
-  }
+    const metaEl = document.getElementById('file-source-meta');
+    if (metaEl) {
+      metaEl.textContent = `Decoding "${file.name}"…`;
+      metaEl.title = `Decoding ${file.name}`;
+    }
 
-  try {
-    const meta = await sgSourceManager.loadLocalAudioFile(file);
-    const chLabel = meta.numberOfChannels === 1 ? 'Mono' : `${meta.numberOfChannels}ch Stereo`;
-    const fullMeta = `${meta.name} (${formatTimeMMSS(meta.durationSec)} • ${(meta.sampleRate / 1000).toFixed(1)} kHz • ${chLabel} • ${meta.sizeMb} MB)`;
-    if (metaEl) {
-      metaEl.textContent = `${meta.name} (${formatTimeMMSS(meta.durationSec)})`;
-      metaEl.title = fullMeta;
+    try {
+      const meta = await sgSourceManager.loadLocalAudioFile(file);
+      const chLabel = meta.numberOfChannels === 1 ? 'Mono' : `${meta.numberOfChannels}ch Stereo`;
+      const fullMeta = `${meta.name} (${formatTimeMMSS(meta.durationSec)} • ${(meta.sampleRate / 1000).toFixed(1)} kHz • ${chLabel} • ${meta.sizeMb} MB)`;
+      if (metaEl) {
+        metaEl.textContent = `${meta.name} (${formatTimeMMSS(meta.durationSec)})`;
+        metaEl.title = fullMeta;
+      }
+      const clearBtn = document.getElementById('btn-clear-local-file');
+      if (clearBtn) {
+        clearBtn.classList.remove('hidden');
+        clearBtn.classList.add('inline-flex');
+      }
+      if (meta.warnings && meta.warnings.length > 0) {
+        showTransportNotice(meta.warnings.join(' '));
+      } else {
+        hideTransportNotice();
+      }
+      appState.loopStartRatio = 0.0;
+      appState.loopEndRatio = 1.0;
+      updateWaveformLoopUI();
+      drawGlobalWaveform();
+      sgAudioEngine.playUiCue('correct', appState.settings.uiSfxEnabled);
+      if (appState.isPlaying) startAudioPlayback();
+    } catch (err) {
+      if (metaEl) {
+        metaEl.textContent = 'Decode failed';
+        metaEl.title = 'Decode failed — choose WAV, MP3, FLAC, OGG, or M4A';
+      }
+      showTransportNotice(err && err.message ? err.message : 'Failed to decode audio file.');
     }
-    const clearBtn = document.getElementById('btn-clear-local-file');
-    if (clearBtn) {
-      clearBtn.classList.remove('hidden');
-      clearBtn.classList.add('inline-flex');
-    }
-    if (meta.warnings && meta.warnings.length > 0) {
-      showTransportNotice(meta.warnings.join(' '));
-    } else {
-      hideTransportNotice();
-    }
-    appState.loopStartRatio = 0.0;
-    appState.loopEndRatio = 1.0;
-    updateWaveformLoopUI();
-    drawGlobalWaveform();
-    sgAudioEngine.playUiCue('correct', appState.settings.uiSfxEnabled);
-    if (appState.isPlaying) startAudioPlayback();
-  } catch (err) {
-    if (metaEl) {
-      metaEl.textContent = 'Decode failed';
-      metaEl.title = 'Decode failed — choose WAV, MP3, FLAC, OGG, or M4A';
-    }
-    showTransportNotice(err && err.message ? err.message : 'Failed to decode audio file.');
-  }
-});
+  });
+}
+try { initAudioFileInputHandler(); } catch (e) {}
 
 function clearLoadedLocalFile() {
   sgSourceManager.clearLocalAudioFile();
@@ -9283,6 +9289,7 @@ function switchMainView(view) {
       if (libSection) libSection.classList.add('hidden');
       if (deckSection) deckSection.classList.remove('hidden');
       startOrResumePracticeSession(appState.gameMode, appState.mockExamActive ? 'mock' : 'practice');
+      initArenaCanvasInteraction();
       setTimeout(() => resizeArenaCanvas(), 20);
     } else {
       if (libSection) libSection.classList.remove('hidden');
@@ -10019,6 +10026,7 @@ function launchGameFromLobby(gameId, isMockTransition = false) {
   const deckSection = document.getElementById('arena-interactive-deck');
   if (libSection) libSection.classList.add('hidden');
   if (deckSection) deckSection.classList.remove('hidden');
+  initArenaCanvasInteraction();
   setTimeout(() => resizeArenaCanvas(), 20);
 
   document.getElementById('arena-mascot-thumb').innerHTML = GAME_SVG_ART[gameId];
@@ -10808,8 +10816,20 @@ function stopCheetah60sBlitz() {
 /********************************************************************
  * ARENA CANVAS RENDERING & POINTER/KEYBOARD INTERACTION (GPU HiDPI)
  ********************************************************************/
-const arenaCanvas = document.getElementById('arena-main-canvas');
-const arenaCtx = getGpu2dContext(arenaCanvas, true);
+let arenaCanvas = null;
+let arenaCtx = null;
+let arenaInteractionInitialized = false;
+
+function ensureArenaCanvasInit() {
+  if (!arenaCanvas && typeof document !== 'undefined') {
+    arenaCanvas = document.getElementById('arena-main-canvas');
+    if (arenaCanvas) {
+      arenaCtx = getGpu2dContext(arenaCanvas, true);
+    }
+  }
+  return Boolean(arenaCanvas && arenaCtx);
+}
+
 let arenaGridCacheCanvas = null;
 let arenaGridCacheKey = '';
 let arenaFftPeakHold = new Float32Array(0);
@@ -10820,6 +10840,7 @@ function invalidateArenaGridCache() {
 }
 
 function resizeArenaCanvas() {
+  ensureArenaCanvasInit();
   if (!arenaCanvas || !arenaCanvas.parentElement || !arenaCtx) return;
   const rect = arenaCanvas.parentElement.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
@@ -10919,14 +10940,17 @@ function renderStudioAnimationFrame() {
 
   // Draw Arena canvas only when Arena view is active
   if (appState.currentView === 'arena') {
-    const profile = detectGraphicsCapabilityProfile();
-    const dpr = arenaCanvas._dpr || profile.dpr;
-    const w = arenaCanvas._logicalW || (arenaCanvas.width / dpr);
-    const h = arenaCanvas._logicalH || (arenaCanvas.height / dpr);
-    if (w && h) {
-      arenaCtx.fillStyle = getThemeColor('--sg-surface', '#FBF8F1');
-      arenaCtx.fillRect(0, 0, w, h);
-      drawStandardSpectrumStage(w, h, dpr, profile);
+    ensureArenaCanvasInit();
+    if (arenaCanvas && arenaCtx) {
+      const profile = detectGraphicsCapabilityProfile();
+      const dpr = arenaCanvas._dpr || profile.dpr;
+      const w = arenaCanvas._logicalW || (arenaCanvas.width / dpr);
+      const h = arenaCanvas._logicalH || (arenaCanvas.height / dpr);
+      if (w && h) {
+        arenaCtx.fillStyle = getThemeColor('--sg-surface', '#FBF8F1');
+        arenaCtx.fillRect(0, 0, w, h);
+        drawStandardSpectrumStage(w, h, dpr, profile);
+      }
     }
   }
 
@@ -11224,29 +11248,35 @@ function updateStageFromPointer(clientX, clientY) {
 }
 
 // Unified Pointer Events on Arena Canvas
-arenaCanvas.addEventListener('pointerdown', (e) => {
-  arenaCanvas._cachedRect = arenaCanvas.getBoundingClientRect();
-  appState.isDraggingStage = true;
-  try { arenaCanvas.setPointerCapture(e.pointerId); } catch (err) {}
-  updateStageFromPointer(e.clientX, e.clientY);
-});
-arenaCanvas.addEventListener('pointermove', (e) => {
-  if (appState.isDraggingStage) {
+function initArenaCanvasInteraction() {
+  if (arenaInteractionInitialized) return;
+  if (!ensureArenaCanvasInit()) return;
+  arenaInteractionInitialized = true;
+
+  arenaCanvas.addEventListener('pointerdown', (e) => {
+    arenaCanvas._cachedRect = arenaCanvas.getBoundingClientRect();
+    appState.isDraggingStage = true;
+    try { arenaCanvas.setPointerCapture(e.pointerId); } catch (err) {}
     updateStageFromPointer(e.clientX, e.clientY);
-  }
-});
-const endStagePointer = (e) => {
-  if (appState.isDraggingStage) {
-    appState.isDraggingStage = false;
-    try { arenaCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
-    // Commit settled coordinates cleanly onto exact 8191-tap Linear-Phase FIR Convolver
-    if (appState.listenState === 'user' || appState.gameMode === 'feedback') {
-      applyCurrentArenaDspToEngine();
+  });
+  arenaCanvas.addEventListener('pointermove', (e) => {
+    if (appState.isDraggingStage) {
+      updateStageFromPointer(e.clientX, e.clientY);
     }
-  }
-};
-arenaCanvas.addEventListener('pointerup', endStagePointer);
-arenaCanvas.addEventListener('pointercancel', endStagePointer);
+  });
+  const endStagePointer = (e) => {
+    if (appState.isDraggingStage) {
+      appState.isDraggingStage = false;
+      try { arenaCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+      // Commit settled coordinates cleanly onto exact 8191-tap Linear-Phase FIR Convolver
+      if (appState.listenState === 'user' || appState.gameMode === 'feedback') {
+        applyCurrentArenaDspToEngine();
+      }
+    }
+  };
+  arenaCanvas.addEventListener('pointerup', endStagePointer);
+  arenaCanvas.addEventListener('pointercancel', endStagePointer);
+}
 
 function toggleSignatureEqPill() {
   markUserTrainingInteraction();
@@ -11696,6 +11726,8 @@ function bootstrapEarlisthenic() {
   } catch (e) { console.warn('Preload tracks warn:', e); }
 
   try { renderStudioSourceSelectOptions(); } catch (e) { console.warn('Source options warn:', e); }
+  try { initAudioFileInputHandler(); } catch (e) {}
+  try { initArenaCanvasInteraction(); } catch (e) {}
   try { startUndergroundMaterialsLoader(); } catch (e) { console.warn('Underground loader warn:', e); }
   try { syncAudioFormatControlsUI(); } catch (e) { console.warn('Audio format warn:', e); }
   try { updateGlobalHeaderTrackingUI(); } catch (e) { console.warn('Header tracking warn:', e); }
