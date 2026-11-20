@@ -23,13 +23,21 @@
     })();
   </script>
 
-  <!-- High-Performance DNS & TCP/TLS Preconnect Hints for Google Cloud Edge -->
+  <!-- High-Performance DNS & TCP/TLS Preconnect Hints for Google Cloud Edge & Core CDNs -->
   <link rel="preconnect" href="https://script.google.com" crossorigin>
   <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
   <link rel="preconnect" href="https://accounts.google.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <link rel="dns-prefetch" href="https://script.google.com">
   <link rel="dns-prefetch" href="https://script.googleusercontent.com">
   <link rel="dns-prefetch" href="https://accounts.google.com">
+  <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
+  <link rel="dns-prefetch" href="https://fonts.googleapis.com">
+  <link rel="dns-prefetch" href="https://fonts.gstatic.com">
+  <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
@@ -209,6 +217,34 @@
   <script>
     var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec";
 
+    // Immediate Early Navigation: Start streaming Google Apps Script payload before subsequent scripts parse
+    var urlParams = new URLSearchParams(window.location.search || "");
+    urlParams.delete("fbclid");
+    urlParams.delete("mibextid");
+    urlParams.delete("utm_source");
+    urlParams.delete("utm_medium");
+    urlParams.delete("utm_campaign");
+    urlParams.delete("utm_content");
+    urlParams.delete("utm_term");
+
+    var cleanQuery = urlParams.toString();
+    var hash = window.location.hash || "";
+    var targetUrl = gasBaseUrl;
+    if (cleanQuery) {
+      targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
+    }
+    // 5-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
+    var cacheBucket = "_v=2.10.12_" + Math.floor(Date.now() / 300000);
+    targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
+    if (hash) {
+      targetUrl += hash;
+    }
+
+    var appFrame = document.getElementById("app-frame");
+    if (appFrame) {
+      appFrame.src = targetUrl;
+    }
+
     // Detect Facebook In-App Browser
     var isFbIab = /FBAN|FBAV|FB_IAB|FB4A|FBIOS/i.test(navigator.userAgent || '');
     if (isFbIab) {
@@ -243,30 +279,6 @@
       }
     }
 
-    // Strip tracking parameters to preserve edge caching on Google Apps Script
-    var urlParams = new URLSearchParams(window.location.search || "");
-    urlParams.delete("fbclid");
-    urlParams.delete("mibextid");
-    urlParams.delete("utm_source");
-    urlParams.delete("utm_medium");
-    urlParams.delete("utm_campaign");
-    urlParams.delete("utm_content");
-    urlParams.delete("utm_term");
-
-    var cleanQuery = urlParams.toString();
-    var hash = window.location.hash || "";
-    var targetUrl = gasBaseUrl;
-    if (cleanQuery) {
-      targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
-    }
-    // 5-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.10.11_" + Math.floor(Date.now() / 300000);
-    targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
-    if (hash) {
-      targetUrl += hash;
-    }
-
-    var appFrame = document.getElementById("app-frame");
     var isLoaderHidden = false;
     function hideLoader() {
       if (isLoaderHidden) return;
@@ -290,10 +302,6 @@
 
     // Fallback safety watchdog: auto-hide splash only if handshake takes longer than 6.5s
     setTimeout(hideLoader, 6500);
-
-    if (appFrame) {
-      appFrame.src = targetUrl;
-    }
 
     // Anti-screen capture clipboard clearing
     function clearClipboard() {
