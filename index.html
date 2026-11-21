@@ -13,7 +13,7 @@
       try {
         var saved = localStorage.getItem('earlisthenic_theme');
         var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        var isDark = saved === 'dark' || (saved !== 'light' && prefersDark);
+        var isDark = saved ? (saved === 'dark' || (saved === 'auto' && prefersDark)) : true;
         if (isDark) {
           document.documentElement.classList.add('dark');
         } else {
@@ -40,7 +40,7 @@
   <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
 
   <!-- Core Engine CDN Preload: Stream the compressed 92 KB bundle upfront in parallel -->
-  <link rel="preload" href="dist/earlisthenic-core.js?v=2.10.19" as="script" crossorigin>
+  <link rel="preload" href="dist/earlisthenic-core.js?v=2.10.20" as="script" crossorigin>
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
