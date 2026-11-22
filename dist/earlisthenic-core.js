@@ -8219,8 +8219,7 @@ function renderStudioSourceSelectOptions() {
       const t = tracks[i];
       if (!t || !t.fileId) continue;
       const cleanName = sanitizeTrackDisplayName(t.name) || t.name;
-      const badge = t.qualityBadge ? ` [${t.qualityBadge}]` : (t.bitDepth === 24 ? ' [Master 24b]' : '');
-      html += `<option value="drive:${escapeHtml(t.fileId)}">${escapeHtml(cleanName)}${escapeHtml(badge)}</option>`;
+      html += `<option value="drive:${escapeHtml(t.fileId)}">${escapeHtml(cleanName)}</option>`;
     }
     html += '</optgroup>';
   }
