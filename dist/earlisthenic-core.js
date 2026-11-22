@@ -671,6 +671,28 @@ class EarlisthenicAudioEngine {
   }
 
   /**
+   * Smoothly ducks active audio to near-silence during a track switch without disconnecting the
+   * Web Audio graph, preserving the iOS Safari / mobile media session and preventing autoplay mute.
+   */
+  duckActiveSourcesForTrackSwitch() {
+    this.ensureContext();
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+    const now = this.audioCtx ? this.audioCtx.currentTime : 0;
+    if (this.activeSourceGain && this.audioCtx) {
+      try {
+        if (typeof this.activeSourceGain.gain.cancelScheduledValues === 'function') {
+          this.activeSourceGain.gain.cancelScheduledValues(now);
+        }
+        const curVal = typeof this.activeSourceGain.gain.value === 'number' ? this.activeSourceGain.gain.value : 1.0;
+        this.activeSourceGain.gain.setValueAtTime(curVal, now);
+        this.activeSourceGain.gain.linearRampToValueAtTime(0.00001, now + 0.025);
+      } catch (e) {}
+    }
+  }
+
+  /**
    * Seamlessly crossfades (18ms equal-sum ramp) from the currently playing buffer
    * onto a newly expanded or completed buffer at the exact continuing offset without clipping.
    */
@@ -2042,7 +2064,18 @@ class EarlisthenicSourceManager {
         if (typeof fetch !== 'function') break;
         const res = await fetch(url);
         if (res && (res.ok || res.status === 206)) {
-          const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || 0;
+          const KNOWN_TRACK_SIZES = {
+            '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32953826,
+            '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46876053,
+            '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56965145,
+            '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50580734,
+            '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58639781,
+            '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69590296,
+            '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 57743092,
+            '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74366094,
+            '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53191801
+          };
+          const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || 50000000;
           let assembledBuf = null;
 
           if (res.body && typeof res.body.getReader === 'function') {
@@ -2061,7 +2094,7 @@ class EarlisthenicSourceManager {
               if (value && value.length > 0) {
                 chunks.push(value);
                 loaded += value.length;
-                if (onProgress) onProgress(loaded, totalBytes || loaded, track);
+                if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes), track);
               }
             }
             const assembled = new Uint8Array(loaded);
@@ -2071,6 +2104,7 @@ class EarlisthenicSourceManager {
               cursor += chunks[i].length;
             }
             assembledBuf = assembled.buffer;
+            if (onProgress) onProgress(loaded, loaded, track);
           } else {
             assembledBuf = await res.arrayBuffer();
             if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
@@ -8611,6 +8645,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         if (total > 0) {
           appState._driveLoadPercent = Math.min(99, Math.round((loaded / total) * 100));
         }
+        updateTransportPlayUI();
         if (appState._loadingDriveShouldPlay || appState.isPlaying) {
           const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
           showTransportNotice(`Streaming "${cleanName}" (${appState._driveLoadPercent}%)...`, false);
@@ -8623,16 +8658,17 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     if (loadToken !== appState._driveTrackLoadToken) return null;
 
     const playNow = Boolean(appState._loadingDriveShouldPlay);
-    const wasPlaying = Boolean(appState.isPlaying);
+    const wasPlaying = Boolean(appState.isPlaying || (sgAudioEngine && (sgAudioEngine.activeBufferSource || sgAudioEngine.activeSourceGain)));
     appState._loadingDriveTrackId = '';
     appState._loadingDriveShouldPlay = false;
+    appState._driveLoadPercent = 0;
     updateWaveformLoopUI();
     drawGlobalWaveform();
     if (playNow || wasPlaying) {
       const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
       showTransportNotice(`Playing: "${cleanName}"`, false);
       setTimeout(hideTransportNotice, 2500);
-      startDecodedActiveBufferPlayback(buf, wasPlaying);
+      startDecodedActiveBufferPlayback(buf, true);
     } else {
       updateTransportPlayUI();
     }
@@ -8724,13 +8760,19 @@ function selectStudioLoop(loopKey) {
       updateWaveformLoopUI();
       drawGlobalWaveform();
       if (cached) {
-        if (wasPlaying) startDecodedActiveBufferPlayback(cached, false);
+        appState.playbackOffsetSec = 0;
+        if (wasPlaying) startDecodedActiveBufferPlayback(cached, true);
         else scheduleFreeAudioLibraryPrewarm(fileId);
       } else if (wasPlaying) {
-        // Immediate switch: stop previous track cleanly, load and play the newly selected track directly
-        stopAudioPlayback();
+        // Immediate switch: duck previous track into silence without disconnecting Web Audio graph,
+        // keeping the iOS Safari audio session active to avoid autoplay mute.
+        appState.playbackOffsetSec = 0;
+        if (typeof sgAudioEngine.duckActiveSourcesForTrackSwitch === 'function') {
+          sgAudioEngine.duckActiveSourcesForTrackSwitch();
+        }
         loadDriveTrackAndMaybePlay(track, true);
       } else {
+        appState.playbackOffsetSec = 0;
         // Pre-decode from IDB in background so Play Audio is < 1ms
         loadDriveTrackAndMaybePlay(track, false);
       }
@@ -9230,9 +9272,12 @@ function updateTransportPlayUI() {
     icon.className = 'fa-solid fa-stop text-xs sm:text-[11px]';
     txt.textContent = 'Stop Audio';
   } else if (appState._loadingDriveTrackId && appState._loadingDriveShouldPlay) {
-    btn.className = 'h-8 sm:h-9 w-8 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap bg-[#B56D4E] text-[#FBF8F1] border border-[#965438] shadow-xs transition-all';
+    btn.className = 'h-8 sm:h-9 w-auto min-w-[32px] sm:min-w-[40px] md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap bg-[#B56D4E] text-[#FBF8F1] border border-[#965438] shadow-xs transition-all';
     icon.className = 'fa-solid fa-circle-notch fa-spin text-xs sm:text-[11px]';
-    txt.textContent = 'Loading...';
+    const pct = (typeof appState._driveLoadPercent === 'number' && appState._driveLoadPercent > 0)
+      ? `${appState._driveLoadPercent}%`
+      : 'Loading...';
+    txt.textContent = pct;
   } else {
     btn.className = 'btn-moss h-8 sm:h-9 w-8 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap shadow-xs hover:shadow-md transition-all';
     icon.className = 'fa-solid fa-play text-xs sm:text-[11px]';
