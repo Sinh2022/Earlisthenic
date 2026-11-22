@@ -1219,8 +1219,8 @@
     },
     "sampleRate": 44100,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_Dau_Nua_Roi.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_Dau_Nua_Roi.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_dau_Nua_Roi.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_dau_Nua_Roi.flac",
     "qualityBadge": "Master 24b/44.1k"
   },
   {
@@ -2453,7 +2453,7 @@
     "sizeBytes": 57743092,
     "mimeType": "application/x-flac",
     "extension": ".flac",
-    "updatedAt": "2026-11-19T06:20:45.199Z",
+    "updatedAt": "2026-11-19T06:18:21.751Z",
     "waveform": {
       "durationSec": 386.29,
       "bins": 128,
@@ -2851,8 +2851,8 @@
     },
     "sampleRate": 44100,
     "bitDepth": 16,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Skyfire_Steve_Allen_Remix.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Skyfire_Steve_Allen_Remix.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Skyfire_Steve_Allen_Devon_Colombage_Remix.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Skyfire_Steve_Allen_Devon_Colombage_Remix.flac",
     "qualityBadge": "Lossless 16b/44.1k"
   },
   {
@@ -3259,8 +3259,8 @@
     },
     "sampleRate": 96000,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_Di.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_Di.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_di.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_di.flac",
     "qualityBadge": "Master 24b/96k"
   },
   {
