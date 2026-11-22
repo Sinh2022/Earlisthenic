@@ -1760,12 +1760,54 @@ class EarlisthenicSourceManager {
     if (this.drivePreviewCache) this.drivePreviewCache.clear();
   }
 
+  static getTrackCdnUrl(track) {
+    if (!track) return null;
+    if (track.cdnUrl) return track.cdnUrl;
+    const fileIdMap = {
+      '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 'Bau_Troi_Moi.flac',
+      '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 'Gia_Nhu.flac',
+      '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 'Khong_Dau_Nua_Roi.flac',
+      '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 'Keo_Ca_Keo_Ket.flac',
+      '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 'Roi_Bo.flac',
+      '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 'Skyfire_Original_Mix.flac',
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Remix.flac',
+      '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 'Troi_Giau_Troi_Mang_Di.flac',
+      '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 'Tim_Em.flac'
+    };
+    const fn = (track.fileId && fileIdMap[track.fileId]) || null;
+    if (!fn) return null;
+    return 'https://sinh2022.github.io/Earlisthenic/audio/' + fn;
+  }
+
+  static getTrackFallbackCdnUrl(track) {
+    if (!track) return null;
+    if (track.fallbackCdnUrl) return track.fallbackCdnUrl;
+    const fileIdMap = {
+      '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 'Bau_Troi_Moi.flac',
+      '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 'Gia_Nhu.flac',
+      '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 'Khong_Dau_Nua_Roi.flac',
+      '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 'Keo_Ca_Keo_Ket.flac',
+      '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 'Roi_Bo.flac',
+      '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 'Skyfire_Original_Mix.flac',
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Remix.flac',
+      '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 'Troi_Giau_Troi_Mang_Di.flac',
+      '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 'Tim_Em.flac'
+    };
+    const fn = (track.fileId && fileIdMap[track.fileId]) || null;
+    if (!fn) return null;
+    return 'https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/' + fn;
+  }
+
   setDriveTracks(tracks) {
     this.driveTracks = Array.isArray(tracks) ? tracks.slice() : [];
     for (let i = 0; i < this.driveTracks.length; i++) {
       const t = this.driveTracks[i];
-      if (t && t.fileId && t.waveform && Array.isArray(t.waveform.mins) && t.waveform.mins.length > 0) {
-        this.driveWaveformCache.set(t.fileId, t.waveform);
+      if (t) {
+        if (!t.cdnUrl) t.cdnUrl = EarlisthenicSourceManager.getTrackCdnUrl(t);
+        if (!t.fallbackCdnUrl) t.fallbackCdnUrl = EarlisthenicSourceManager.getTrackFallbackCdnUrl(t);
+        if (t.fileId && t.waveform && Array.isArray(t.waveform.mins) && t.waveform.mins.length > 0) {
+          this.driveWaveformCache.set(t.fileId, t.waveform);
+        }
       }
     }
     return this.driveTracks;
@@ -1988,6 +2030,77 @@ class EarlisthenicSourceManager {
   }
 
   async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn) {
+    // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
+    const cdnUrls = [
+      track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
+      track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
+    ].filter(Boolean);
+
+    for (let ci = 0; ci < cdnUrls.length; ci++) {
+      const url = cdnUrls[ci];
+      try {
+        if (typeof fetch !== 'function') break;
+        const res = await fetch(url);
+        if (res && (res.ok || res.status === 206)) {
+          const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || 0;
+          let assembledBuf = null;
+
+          if (res.body && typeof res.body.getReader === 'function') {
+            const reader = res.body.getReader();
+            const chunks = [];
+            let loaded = 0;
+            while (true) {
+              if (abortCheckFn && abortCheckFn()) {
+                try { reader.cancel(); } catch (e) {}
+                const abortedErr = new Error('Track load superseded.');
+                abortedErr.isAborted = true;
+                throw abortedErr;
+              }
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value && value.length > 0) {
+                chunks.push(value);
+                loaded += value.length;
+                if (onProgress) onProgress(loaded, totalBytes || loaded, track);
+              }
+            }
+            const assembled = new Uint8Array(loaded);
+            let cursor = 0;
+            for (let i = 0; i < chunks.length; i++) {
+              assembled.set(chunks[i], cursor);
+              cursor += chunks[i].length;
+            }
+            assembledBuf = assembled.buffer;
+          } else {
+            assembledBuf = await res.arrayBuffer();
+            if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
+          }
+
+          if (assembledBuf && assembledBuf.byteLength > 1024) {
+            const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
+            this.driveRawCache.set(track.fileId, rawRecord);
+            if (this.driveRawCache.size > 3) {
+              const oldestRawId = this.driveRawCache.keys().next().value;
+              if (oldestRawId && oldestRawId !== track.fileId && oldestRawId !== this.selectedDriveTrackId) {
+                this.driveRawCache.delete(oldestRawId);
+              }
+            }
+            await this._idbPutTrack({
+              fileId: track.fileId,
+              name: track.name,
+              updatedAt: track.updatedAt,
+              sizeBytes: assembledBuf.byteLength,
+              arrayBuffer: rawRecord.arrayBuffer,
+              waveform: track.waveform || this.driveWaveformCache.get(track.fileId) || null
+            });
+            return rawRecord;
+          }
+        }
+      } catch (cdnErr) {
+        if (cdnErr && cdnErr.isAborted) throw cdnErr;
+        // Proceed to fallback CDN or Apps Script bridge
+      }
+    }
 
     if (typeof fetchChunkFn !== 'function') {
       throw new Error('Drive streaming bridge is unavailable offline.');
@@ -8106,7 +8219,8 @@ function renderStudioSourceSelectOptions() {
       const t = tracks[i];
       if (!t || !t.fileId) continue;
       const cleanName = sanitizeTrackDisplayName(t.name) || t.name;
-      html += `<option value="drive:${escapeHtml(t.fileId)}">${escapeHtml(cleanName)}</option>`;
+      const badge = t.qualityBadge ? ` [${t.qualityBadge}]` : (t.bitDepth === 24 ? ' [Master 24b]' : '');
+      html += `<option value="drive:${escapeHtml(t.fileId)}">${escapeHtml(cleanName)}${escapeHtml(badge)}</option>`;
     }
     html += '</optgroup>';
   }
