@@ -7481,7 +7481,7 @@ function loadProgressFromDriveForActiveProfile() {
           updateProfileHeaderUI();
         }
         if (Array.isArray(res.freeAudioTracks)) {
-          applyFreeAudioTracksList(res.freeAudioTracks, false);
+          applyFreeAudioTracksList(res.freeAudioTracks, true);
           startUndergroundMaterialsLoader();
         }
         syncAudioFormatControlsUI();
@@ -8614,7 +8614,8 @@ function selectStudioLoop(loopKey) {
         if (wasPlaying) startDecodedActiveBufferPlayback(cached, false);
         else scheduleFreeAudioLibraryPrewarm(fileId);
       } else if (wasPlaying) {
-        // Continuous playback: keep current sound playing smoothly, hot-swap when new track is ready
+        // Immediate switch: stop previous track cleanly, load and play the newly selected track directly
+        stopAudioPlayback();
         loadDriveTrackAndMaybePlay(track, true);
       } else {
         // Pre-decode from IDB in background so Play Audio is < 1ms
@@ -9026,6 +9027,14 @@ function startAudioPlayback() {
     if (ctx && ctx.state === 'suspended') {
       ctx.resume().catch(() => {});
     }
+    // Silent 1-sample buffer unlock for iOS Safari/WebKit touch gesture:
+    try {
+      const unlockBuf = ctx.createBuffer(1, 1, ctx.sampleRate || 48000);
+      const unlockSrc = ctx.createBufferSource();
+      unlockSrc.buffer = unlockBuf;
+      unlockSrc.connect(ctx.destination);
+      unlockSrc.start(0);
+    } catch (e) {}
     applyCurrentArenaDspToEngine();
     syncAudioFormatControlsUI();
   }
@@ -9041,17 +9050,13 @@ function startAudioPlayback() {
     if (!cachedDriveBuf) {
       const track = sgSourceManager.getSelectedDriveTrack();
       if (track) {
-        // Immediate Keep-Alive & Instant Sound on Mobile:
-        // Start playing the built-in reference buffer immediately inside the user touch gesture.
-        // This keeps the AudioContext running continuously on mobile Safari/Blink without suspending.
-        const refBuf = (typeof sgSourceManager.getFallbackBuffer === 'function')
-          ? sgSourceManager.getFallbackBuffer()
-          : (typeof sgSourceManager.getOrCreateStudioBuffer === 'function' ? sgSourceManager.getOrCreateStudioBuffer('drums') : null);
-        if (refBuf) {
-          startDecodedActiveBufferPlayback(refBuf, false);
-          const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-          showTransportNotice(`Streaming "${cleanName}" (0%)... Previewing reference loop.`, false);
-        }
+        // True Lossless Experience: Never play a placeholder or swap from an unwanted sound!
+        // Show clean loading state on transport button and banner, unlock audio hardware silently:
+        appState._loadingDriveTrackId = track.fileId;
+        appState._loadingDriveShouldPlay = true;
+        updateTransportPlayUI();
+        const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+        showTransportNotice(`Loading "${cleanName}"...`, false);
         loadDriveTrackAndMaybePlay(track, true);
         return;
       }
@@ -9108,11 +9113,15 @@ function updateTransportPlayUI() {
   if (!btn || !icon || !txt) return;
 
   if (appState.isPlaying) {
-    btn.className = 'h-8 sm:h-9 w-9 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap bg-[#A8463B] text-[#FBF8F1] border border-[#87342B] shadow-xs hover:shadow-md transition-all';
+    btn.className = 'h-8 sm:h-9 w-8 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap bg-[#A8463B] text-[#FBF8F1] border border-[#87342B] shadow-xs hover:shadow-md transition-all';
     icon.className = 'fa-solid fa-stop text-xs sm:text-[11px]';
     txt.textContent = 'Stop Audio';
+  } else if (appState._loadingDriveTrackId && appState._loadingDriveShouldPlay) {
+    btn.className = 'h-8 sm:h-9 w-8 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap bg-[#B56D4E] text-[#FBF8F1] border border-[#965438] shadow-xs transition-all';
+    icon.className = 'fa-solid fa-circle-notch fa-spin text-xs sm:text-[11px]';
+    txt.textContent = 'Loading...';
   } else {
-    btn.className = 'btn-moss h-8 sm:h-9 w-9 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap shadow-xs hover:shadow-md transition-all';
+    btn.className = 'btn-moss h-8 sm:h-9 w-8 sm:w-10 md:w-[114px] px-2 md:px-3 rounded-xl font-semibold text-[11px] sm:text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap shadow-xs hover:shadow-md transition-all';
     icon.className = 'fa-solid fa-play text-xs sm:text-[11px]';
     txt.textContent = 'Play Audio';
   }
@@ -11385,7 +11394,7 @@ function renderStudioAnimationFrame() {
 
   // Update transport waveform playhead & peak meter when playing
   if (appState.isPlaying && sgAudioEngine.audioCtx) {
-    const buf = sgSourceManager.getActiveBuffer() || (typeof sgSourceManager.getFallbackBuffer === 'function' ? sgSourceManager.getFallbackBuffer() : null);
+    const buf = sgSourceManager.getActiveBuffer();
     if (buf) {
       const isDriveTrack = sgSourceManager.sourceMode === 'studio' && Boolean(sgSourceManager.selectedDriveTrackId);
       const driveWf = isDriveTrack ? sgSourceManager.getSelectedDriveWaveformMeta() : null;
@@ -12190,7 +12199,7 @@ function bootstrapEarlisthenic() {
   try {
     const preloadedTracks = getPreloadedFreeAudioTracksClient();
     if (Array.isArray(preloadedTracks) && preloadedTracks.length > 0) {
-      applyFreeAudioTracksList(preloadedTracks, false);
+      applyFreeAudioTracksList(preloadedTracks, true);
     }
   } catch (e) { console.warn('Preload tracks warn:', e); }
 
