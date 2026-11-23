@@ -1860,6 +1860,9 @@ class EarlisthenicSourceManager {
       } catch (e) {}
       this._activeAbortControllers.delete(fileId);
     }
+    if (this._inFlightDownloads && this._inFlightDownloads.has(fileId)) {
+      this._inFlightDownloads.delete(fileId);
+    }
   }
 
   abortAllDownloads() {
@@ -1869,11 +1872,13 @@ class EarlisthenicSourceManager {
       }
       this._activeAbortControllers.clear();
     }
+    if (this._inFlightDownloads) {
+      this._inFlightDownloads.clear();
+    }
   }
 
   static getTrackCdnUrl(track) {
     if (!track) return null;
-    if (track.cdnUrl) return track.cdnUrl;
     const fileIdMap = {
       '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 'Bau_Troi_Moi.flac',
       '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 'Gia_Nhu.flac',
@@ -1881,10 +1886,15 @@ class EarlisthenicSourceManager {
       '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 'Keo_Ca_Keo_Ket.flac',
       '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 'Roi_Bo.flac',
       '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 'Skyfire_Original_Mix.flac',
-      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Remix.flac',
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Devon_Colombage_Remix.flac',
       '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 'Troi_Giau_Troi_Mang_Di.flac',
       '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 'Tim_Em.flac'
     };
+    if (track.cdnUrl) {
+      return track.cdnUrl
+        .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+        .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
+    }
     const fn = (track.fileId && fileIdMap[track.fileId]) || null;
     if (!fn) return null;
     return 'https://sinh2022.github.io/Earlisthenic/audio/' + fn;
@@ -1892,7 +1902,6 @@ class EarlisthenicSourceManager {
 
   static getTrackFallbackCdnUrl(track) {
     if (!track) return null;
-    if (track.fallbackCdnUrl) return track.fallbackCdnUrl;
     const fileIdMap = {
       '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 'Bau_Troi_Moi.flac',
       '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 'Gia_Nhu.flac',
@@ -1900,10 +1909,15 @@ class EarlisthenicSourceManager {
       '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 'Keo_Ca_Keo_Ket.flac',
       '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 'Roi_Bo.flac',
       '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 'Skyfire_Original_Mix.flac',
-      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Remix.flac',
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Devon_Colombage_Remix.flac',
       '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 'Troi_Giau_Troi_Mang_Di.flac',
       '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 'Tim_Em.flac'
     };
+    if (track.fallbackCdnUrl) {
+      return track.fallbackCdnUrl
+        .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+        .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
+    }
     const fn = (track.fileId && fileIdMap[track.fileId]) || null;
     if (!fn) return null;
     return 'https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/' + fn;
@@ -1914,6 +1928,16 @@ class EarlisthenicSourceManager {
     for (let i = 0; i < this.driveTracks.length; i++) {
       const t = this.driveTracks[i];
       if (t) {
+        if (t.cdnUrl) {
+          t.cdnUrl = t.cdnUrl
+            .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+            .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
+        }
+        if (t.fallbackCdnUrl) {
+          t.fallbackCdnUrl = t.fallbackCdnUrl
+            .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+            .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
+        }
         if (!t.cdnUrl) t.cdnUrl = EarlisthenicSourceManager.getTrackCdnUrl(t);
         if (!t.fallbackCdnUrl) t.fallbackCdnUrl = EarlisthenicSourceManager.getTrackFallbackCdnUrl(t);
         if (t.fileId && t.waveform && Array.isArray(t.waveform.mins) && t.waveform.mins.length > 0) {
@@ -2184,7 +2208,7 @@ class EarlisthenicSourceManager {
     });
   }
 
-  async _downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn) {
+  async _downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, isUserForeground) {
     let rawRecord = this.driveRawCache.get(track.fileId);
     if (!rawRecord || rawRecord.updatedAt !== track.updatedAt) {
       const idbRec = await this._idbGetTrack(track.fileId);
@@ -2209,6 +2233,9 @@ class EarlisthenicSourceManager {
       if (typeof onProgress === 'function' && inFlight.listeners) {
         inFlight.listeners.push(onProgress);
       }
+      if (isUserForeground) {
+        inFlight.isForeground = true;
+      }
       return inFlight.promise;
     }
 
@@ -2219,26 +2246,37 @@ class EarlisthenicSourceManager {
       }
     };
 
+    const inFlightRecord = {
+      promise: null,
+      listeners: listeners,
+      isForeground: Boolean(isUserForeground)
+    };
+
     const downloadPromise = (async () => {
       try {
-        return await this._executeRawDownload(track, fetchChunkFn, broadcastProgress, abortCheckFn);
+        return await this._executeRawDownload(track, fetchChunkFn, broadcastProgress, abortCheckFn, inFlightRecord);
       } finally {
         if (this._inFlightDownloads) this._inFlightDownloads.delete(track.fileId);
       }
     })();
 
-    this._inFlightDownloads.set(track.fileId, {
-      promise: downloadPromise,
-      listeners: listeners
-    });
+    inFlightRecord.promise = downloadPromise;
+    this._inFlightDownloads.set(track.fileId, inFlightRecord);
 
     return downloadPromise;
   }
 
-  async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn) {
+  async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn, inFlightRecord) {
     const abortCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     this._activeAbortControllers = this._activeAbortControllers || new Map();
     if (abortCtrl) this._activeAbortControllers.set(track.fileId, abortCtrl);
+
+    const isAborted = () => {
+      if (inFlightRecord && inFlightRecord.isForeground) {
+        return Boolean(abortCtrl && abortCtrl.signal.aborted);
+      }
+      return Boolean((abortCheckFn && abortCheckFn()) || (abortCtrl && abortCtrl.signal.aborted));
+    };
 
     try {
       // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
@@ -2247,33 +2285,136 @@ class EarlisthenicSourceManager {
         track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
       ].filter(Boolean);
 
+      const KNOWN_TRACK_SIZES = {
+        '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
+        '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
+        '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
+        '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
+        '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
+        '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
+        '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
+        '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
+        '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
+      };
+
       for (let ci = 0; ci < cdnUrls.length; ci++) {
-        const url = cdnUrls[ci];
+        let url = cdnUrls[ci];
+        if (!url) continue;
+        url = url
+          .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+          .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
+
         try {
           if (typeof fetch !== 'function') break;
-          const fetchOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
-          const res = await fetch(url, fetchOpts);
-          if (res && (res.ok || res.status === 206)) {
-            const KNOWN_TRACK_SIZES = {
-              '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
-              '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
-              '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
-              '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
-              '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
-              '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
-              '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
-              '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
-              '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
-            };
-            const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || 50000000;
-            let assembledBuf = null;
+          if (isAborted()) {
+            const abortedErr = new Error('Track load superseded.');
+            abortedErr.isAborted = true;
+            throw abortedErr;
+          }
+
+          let totalBytes = (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || Number(track.sizeBytes) || 0;
+          let supportsRange = true;
+
+          try {
+            const headOpts = { method: 'HEAD' };
+            if (abortCtrl) headOpts.signal = abortCtrl.signal;
+            const headRes = await fetch(url, headOpts);
+            if (headRes && headRes.ok) {
+              const cl = Number(headRes.headers.get('content-length'));
+              if (cl > 0) totalBytes = cl;
+              const ar = headRes.headers.get('accept-ranges');
+              if (ar === 'none') supportsRange = false;
+            } else if (headRes && headRes.status === 404) {
+              continue;
+            }
+          } catch (headErr) {
+            if (isAborted()) throw headErr;
+          }
+
+          if (isAborted()) {
+            const abortedErr = new Error('Track load superseded.');
+            abortedErr.isAborted = true;
+            throw abortedErr;
+          }
+
+          const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks for resilient streaming
+          let assembledBuf = null;
+
+          if (supportsRange && totalBytes > CHUNK_SIZE) {
+            const assembled = new Uint8Array(totalBytes);
+            let offset = 0;
+            let loaded = 0;
+
+            while (offset < totalBytes) {
+              if (isAborted()) {
+                const abortedErr = new Error('Track load superseded.');
+                abortedErr.isAborted = true;
+                throw abortedErr;
+              }
+
+              const end = Math.min(offset + CHUNK_SIZE - 1, totalBytes - 1);
+              const rangeHeader = `bytes=${offset}-${end}`;
+              let chunkRes = null;
+
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                if (isAborted()) break;
+                try {
+                  const chunkFetchOpts = {
+                    headers: { 'Range': rangeHeader }
+                  };
+                  if (abortCtrl) chunkFetchOpts.signal = abortCtrl.signal;
+                  chunkRes = await fetch(url, chunkFetchOpts);
+                  if (chunkRes && (chunkRes.status === 206 || chunkRes.status === 200)) {
+                    break;
+                  }
+                } catch (retryErr) {
+                  if (isAborted()) throw retryErr;
+                  if (attempt === 3) throw retryErr;
+                  await new Promise(r => setTimeout(r, 250 * attempt));
+                }
+              }
+
+              if (isAborted()) {
+                const abortedErr = new Error('Track load superseded.');
+                abortedErr.isAborted = true;
+                throw abortedErr;
+              }
+
+              if (!chunkRes || (chunkRes.status !== 206 && chunkRes.status !== 200)) {
+                throw new Error(`Range chunk fetch failed for "${track.name}" (${rangeHeader}).`);
+              }
+
+              const chunkAb = await chunkRes.arrayBuffer();
+              const chunkU8 = new Uint8Array(chunkAb);
+              if (chunkU8.length === 0) {
+                throw new Error(`Received 0 bytes for chunk ${rangeHeader}`);
+              }
+
+              assembled.set(chunkU8, offset);
+              offset += chunkU8.length;
+              loaded += chunkU8.length;
+
+              if (onProgress) {
+                onProgress(loaded, totalBytes, track);
+              }
+            }
+
+            assembledBuf = assembled.buffer;
+            if (onProgress) onProgress(totalBytes, totalBytes, track);
+          } else {
+            const fetchOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+            const res = await fetch(url, fetchOpts);
+            if (!res || (!res.ok && res.status !== 206)) continue;
+
+            const resCl = Number(res.headers.get('content-length')) || totalBytes;
+            if (resCl > 0) totalBytes = resCl;
 
             if (res.body && typeof res.body.getReader === 'function') {
               const reader = res.body.getReader();
               const chunks = [];
               let loaded = 0;
               while (true) {
-                if ((abortCheckFn && abortCheckFn()) || (abortCtrl && abortCtrl.signal.aborted)) {
+                if (isAborted()) {
                   try { reader.cancel(); } catch (e) {}
                   const abortedErr = new Error('Track load superseded.');
                   abortedErr.isAborted = true;
@@ -2284,11 +2425,8 @@ class EarlisthenicSourceManager {
                 if (value && value.length > 0) {
                   chunks.push(value);
                   loaded += value.length;
-                  if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes), track);
+                  if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes || loaded), track);
                 }
-              }
-              if (totalBytes > 0 && loaded < totalBytes) {
-                throw new Error(`Download incomplete: received ${loaded} of ${totalBytes} bytes for "${track.name}".`);
               }
               const assembled = new Uint8Array(loaded);
               let cursor = 0;
@@ -2300,38 +2438,35 @@ class EarlisthenicSourceManager {
               if (onProgress) onProgress(loaded, loaded, track);
             } else {
               assembledBuf = await res.arrayBuffer();
-              if (totalBytes > 0 && assembledBuf.byteLength < totalBytes) {
-                throw new Error(`Download incomplete: received ${assembledBuf.byteLength} of ${totalBytes} bytes for "${track.name}".`);
-              }
               if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
             }
+          }
 
-            if (assembledBuf && assembledBuf.byteLength > 1024) {
-              const firstByte = new Uint8Array(assembledBuf, 0, 1)[0];
-              if (firstByte === 0x3C) { // '<' indicates HTML error/sign-in page returned instead of audio
-                throw new Error(`CDN returned HTML instead of audio stream for "${track.name}".`);
-              }
-              if (EarlisthenicSourceManager.isFlacBuffer(assembledBuf)) {
-                assembledBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(assembledBuf);
-              }
-              const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
-              this.driveRawCache.set(track.fileId, rawRecord);
-              if (this.driveRawCache.size > 3) {
-                const oldestRawId = this.driveRawCache.keys().next().value;
-                if (oldestRawId && oldestRawId !== track.fileId && oldestRawId !== this.selectedDriveTrackId) {
-                  this.driveRawCache.delete(oldestRawId);
-                }
-              }
-              await this._idbPutTrack({
-                fileId: track.fileId,
-                name: track.name,
-                updatedAt: track.updatedAt,
-                sizeBytes: assembledBuf.byteLength,
-                arrayBuffer: rawRecord.arrayBuffer,
-                waveform: track.waveform || this.driveWaveformCache.get(track.fileId) || null
-              });
-              return rawRecord;
+          if (assembledBuf && assembledBuf.byteLength > 1024) {
+            const firstByte = new Uint8Array(assembledBuf, 0, 1)[0];
+            if (firstByte === 0x3C) { // HTML error page
+              throw new Error(`CDN returned HTML instead of audio stream for "${track.name}".`);
             }
+            if (EarlisthenicSourceManager.isFlacBuffer(assembledBuf)) {
+              assembledBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(assembledBuf);
+            }
+            const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
+            this.driveRawCache.set(track.fileId, rawRecord);
+            if (this.driveRawCache.size > 3) {
+              const oldestRawId = this.driveRawCache.keys().next().value;
+              if (oldestRawId && oldestRawId !== track.fileId && oldestRawId !== this.selectedDriveTrackId) {
+                this.driveRawCache.delete(oldestRawId);
+              }
+            }
+            await this._idbPutTrack({
+              fileId: track.fileId,
+              name: track.name,
+              updatedAt: track.updatedAt,
+              sizeBytes: assembledBuf.byteLength,
+              arrayBuffer: rawRecord.arrayBuffer,
+              waveform: track.waveform || this.driveWaveformCache.get(track.fileId) || null
+            });
+            return rawRecord;
           }
         } catch (cdnErr) {
           if (cdnErr && (cdnErr.isAborted || cdnErr.name === 'AbortError' || (abortCtrl && abortCtrl.signal.aborted))) {
@@ -2339,7 +2474,6 @@ class EarlisthenicSourceManager {
             abortedErr.isAborted = true;
             throw abortedErr;
           }
-          // Proceed to fallback CDN or Apps Script bridge
         }
       }
     } finally {
@@ -2512,7 +2646,7 @@ class EarlisthenicSourceManager {
       return hit;
     }
 
-    const rawRecord = await this._downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn);
+    const rawRecord = await this._downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, true);
     let decoded = null;
     try {
       decoded = (typeof this.engine.safeDecodeAudioData === 'function')
@@ -8687,12 +8821,16 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
       if (currentToken !== _undergroundLoaderToken) break;
 
       try {
-        // Download track raw bytes into IndexedDB via 2-worker chunk streamer
+        const isCurrentActiveUserTrack = () => (appState._loadingDriveTrackId === track.fileId || sgSourceManager.selectedDriveTrackId === track.fileId);
         const rawRecord = await sgSourceManager._downloadTrackRawArrayBuffer(
           track,
           fetchFreeAudioChunkPromise,
           null, // silent progress
-          () => currentToken !== _undergroundLoaderToken || Boolean(appState._loadingDriveTrackId && appState._loadingDriveTrackId !== track.fileId)
+          () => {
+            if (isCurrentActiveUserTrack()) return false;
+            return currentToken !== _undergroundLoaderToken || Boolean(appState._loadingDriveTrackId);
+          },
+          false
         );
 
         if (currentToken !== _undergroundLoaderToken) break;
@@ -8776,6 +8914,7 @@ function cancelPendingDriveTrackLoad() {
   appState._loadingDriveShouldPlay = false;
   appState._loadingDrivePromise = null;
   appState._driveLoadPercent = 0;
+  hideTransportNotice();
   updateTransportPlayUI();
 }
 
@@ -8946,8 +9085,13 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         appState._driveLoadPercent = 0;
         updateTransportPlayUI();
       }
-      if (err && err.isAborted) return null;
-      if (wasShouldPlay) {
+      if (err && err.isAborted) {
+        if (loadToken === appState._driveTrackLoadToken) {
+          hideTransportNotice();
+        }
+        return null;
+      }
+      if (wasShouldPlay && loadToken === appState._driveTrackLoadToken) {
         showTransportNotice((err && err.message) || `Could not load "${track.name}" from FREE AUDIO. Continuing playback.`, false);
       } else {
         hideTransportNotice();
