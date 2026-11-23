@@ -2753,50 +2753,28 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
     });
 
     // =========================================================================
-    // PHASE 1: ULTRA-FAST INITIAL SLICE PRE-WARMING (13.5MB across all 9 tracks)
-    // Slices load in < 3s over Edge CDN, guaranteeing INSTANT (< 40ms) play for all songs!
+    // PHASE 1: ULTRA-FAST PARALLEL SLICE PRE-WARMING (Total 13.5MB across all 9 tracks)
+    // Slices load in parallel over Edge CDN, ensuring INSTANT (< 40ms) play for all songs!
     // =========================================================================
-    for (let i = 0; i < sorted.length; i++) {
-      if (currentToken !== _undergroundLoaderToken) break;
-      const track = sorted[i];
-      if (!track || !track.fileId) continue;
+    const slicePromises = sorted.map(async (track, i) => {
+      if (currentToken !== _undergroundLoaderToken) return;
+      if (!track || !track.fileId) return;
 
-      // Yield if user started an active track load
-      while (appState._loadingDriveTrackId && appState._loadingDriveTrackId !== track.fileId) {
-        if (currentToken !== _undergroundLoaderToken) break;
-        await new Promise(r => setTimeout(r, 400));
-      }
-      if (currentToken !== _undergroundLoaderToken) break;
-
-      // Check if full song is already in IDB
-      let hasFull = false;
       try {
-        const idbRec = await sgSourceManager._idbGetTrack(track.fileId);
-        if (idbRec && idbRec.arrayBuffer && idbRec.arrayBuffer.byteLength > 1024) hasFull = true;
-      } catch (e) {}
-
-      // If no full song and no slice yet, fetch 1.5MB slice
-      if (!hasFull) {
         let hasSlice = Boolean(sgSourceManager.getSliceRecord && sgSourceManager.getSliceRecord(track.fileId));
         if (!hasSlice) {
-          try {
-            const idbSlice = await sgSourceManager._idbGetSlice(track.fileId);
-            if (idbSlice && idbSlice.arrayBuffer) hasSlice = true;
-          } catch (e) {}
+          const idbSlice = await sgSourceManager._idbGetSlice(track.fileId);
+          if (idbSlice && idbSlice.arrayBuffer) hasSlice = true;
         }
 
         if (!hasSlice && typeof sgSourceManager.fetchTrackSlice === 'function') {
-          try {
-            await sgSourceManager.fetchTrackSlice(track, 1.5 * 1024 * 1024);
-          } catch (sliceErr) {}
+          await sgSourceManager.fetchTrackSlice(track, 1.5 * 1024 * 1024);
         }
-      }
 
-      // Pre-decode initial slice for active track or top 2 tracks into RAM
-      if (i < 2 || track.fileId === activeId) {
-        const sliceRec = (typeof sgSourceManager.getSliceRecord === 'function') ? sgSourceManager.getSliceRecord(track.fileId) : null;
-        if (sliceRec && sliceRec.arrayBuffer && !sliceRec.audioBuffer) {
-          try {
+        // Pre-decode initial slice for active track or top 3 tracks into RAM
+        if (i < 3 || track.fileId === activeId) {
+          const sliceRec = (typeof sgSourceManager.getSliceRecord === 'function') ? sgSourceManager.getSliceRecord(track.fileId) : null;
+          if (sliceRec && sliceRec.arrayBuffer && !sliceRec.audioBuffer) {
             let cleanSlice = sliceRec.arrayBuffer;
             if (EarlisthenicSourceManager.isFlacBuffer(cleanSlice)) {
               cleanSlice = EarlisthenicSourceManager.sanitizeFlacMetadata(cleanSlice);
@@ -2807,12 +2785,12 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
             if (decodedSlice) {
               sgSourceManager.setSliceRecord(track.fileId, sliceRec.arrayBuffer, decodedSlice);
             }
-          } catch (e) {}
+          }
         }
-      }
+      } catch (e) {}
+    });
 
-      await new Promise(r => setTimeout(r, 40));
-    }
+    await Promise.all(slicePromises);
 
     // =========================================================================
     // PHASE 2: BACKGROUND FULL MASTER STREAMING (Preserving 100% Original Lossless Audio)
@@ -2966,7 +2944,9 @@ function cancelPendingDriveTrackLoad() {
 
 async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
   if (!track || !track.fileId) return null;
-  cancelFreeAudioLibraryPrewarm();
+  if (shouldPlay) {
+    cancelFreeAudioLibraryPrewarm();
+  }
   if (appState._prefetchTimerId) {
     clearTimeout(appState._prefetchTimerId);
     appState._prefetchTimerId = null;
