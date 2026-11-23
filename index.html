@@ -221,7 +221,7 @@
   </iframe>
 
   <script>
-    var gasBaseUrl = "https://script.google.com/macros/s/AKfycbyIi-ODxEj0-bEuixskkHV30gg570AGWfDzV7fxLOjh60z4sJ1taHOZgBPv1_hi5A7i/exec";
+    var gasBaseUrl = "https://script.google.com/macros/s/AKfycbyBddYehLtMngwLIJfUgokSLLY5Nv3x095ARKZeI_GO_OrEte6wgn93__CCfhIRnMo1/exec";
 
     // Immediate Early Navigation: Start streaming Google Apps Script payload before subsequent scripts parse
     var urlParams = new URLSearchParams(window.location.search || "");
@@ -240,7 +240,7 @@
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     // 1-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.11.1_" + Math.floor(Date.now() / 60000);
+    var cacheBucket = "_v=2.11.2_" + Math.floor(Date.now() / 60000);
     targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
     if (hash) {
       targetUrl += hash;

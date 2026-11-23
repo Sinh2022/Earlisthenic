@@ -674,9 +674,14 @@ class EarlisthenicAudioEngine {
    * Serialized Audio Decoder with WebKit / iOS Safari concurrency protection,
    * FLAC metadata auto-sanitization, and single-retry recovery against CoreAudio thread pool contention.
    */
-  async safeDecodeAudioData(rawArrayBuffer) {
+  async safeDecodeAudioData(rawArrayBuffer, isAbortedFn) {
     if (!rawArrayBuffer || !(rawArrayBuffer instanceof ArrayBuffer || ArrayBuffer.isView(rawArrayBuffer))) {
       throw new Error('Invalid audio buffer provided for decoding.');
+    }
+    if (isAbortedFn && isAbortedFn()) {
+      const abortedErr = new Error('Decode superseded.');
+      abortedErr.isAborted = true;
+      throw abortedErr;
     }
     const ab = rawArrayBuffer instanceof ArrayBuffer ? rawArrayBuffer : rawArrayBuffer.buffer;
     const ctx = this.ensureContext();
@@ -689,6 +694,11 @@ class EarlisthenicAudioEngine {
     }
 
     const decodeOperation = EarlisthenicAudioEngine._decodeQueue.then(async () => {
+      if (isAbortedFn && isAbortedFn()) {
+        const abortedErr = new Error('Decode superseded.');
+        abortedErr.isAborted = true;
+        throw abortedErr;
+      }
       let bufToDecode = ab.slice(0);
       if (typeof EarlisthenicSourceManager !== 'undefined' && typeof EarlisthenicSourceManager.isFlacBuffer === 'function') {
         if (EarlisthenicSourceManager.isFlacBuffer(bufToDecode)) {
@@ -699,6 +709,11 @@ class EarlisthenicAudioEngine {
       try {
         return await ctx.decodeAudioData(bufToDecode);
       } catch (firstErr) {
+        if (isAbortedFn && isAbortedFn()) {
+          const abortedErr = new Error('Decode superseded.');
+          abortedErr.isAborted = true;
+          throw abortedErr;
+        }
         // WebKit CoreAudio transient thread-exhaustion recovery:
         // Wait 60ms, create fresh slice from original buffer, and retry once
         await new Promise(r => setTimeout(r, 60));
@@ -1819,6 +1834,7 @@ class EarlisthenicSourceManager {
     this.driveDecodedCache = new Map(); // `${fileId}@${sampleRate}` -> AudioBuffer
     this.drivePreviewCache = new Map(); // `${fileId}@${sampleRate}` -> partial prefix AudioBuffer while streaming
     this.driveWaveformCache = new Map(); // fileId -> { updatedAt, durationSec, bins, mins, maxs, rms }
+    this._activeAbortControllers = new Map(); // fileId -> AbortController
 
     // Local file state
     this.customAudioBuffer = null;
@@ -1833,6 +1849,26 @@ class EarlisthenicSourceManager {
     this.generatedLoopCache = {};
     this.driveDecodedCache.clear();
     if (this.drivePreviewCache) this.drivePreviewCache.clear();
+    this.abortAllDownloads();
+  }
+
+  abortTrackDownload(fileId) {
+    if (this._activeAbortControllers && this._activeAbortControllers.has(fileId)) {
+      try {
+        const ctrl = this._activeAbortControllers.get(fileId);
+        if (ctrl) ctrl.abort();
+      } catch (e) {}
+      this._activeAbortControllers.delete(fileId);
+    }
+  }
+
+  abortAllDownloads() {
+    if (this._activeAbortControllers) {
+      for (const [fileId, ctrl] of this._activeAbortControllers.entries()) {
+        try { if (ctrl) ctrl.abort(); } catch (e) {}
+      }
+      this._activeAbortControllers.clear();
+    }
   }
 
   static getTrackCdnUrl(track) {
@@ -2132,6 +2168,22 @@ class EarlisthenicSourceManager {
     });
   }
 
+  async _idbDeleteTrack(fileId) {
+    const db = await this._idbOpen();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(FREE_AUDIO_IDB_STORE, 'readwrite');
+        tx.objectStore(FREE_AUDIO_IDB_STORE).delete(fileId);
+        tx.oncomplete = () => { try { db.close(); } catch (e) {} resolve(true); };
+        tx.onerror = () => { try { db.close(); } catch (e) {} resolve(false); };
+      } catch (e) {
+        try { db.close(); } catch (err) {}
+        resolve(false);
+      }
+    });
+  }
+
   async _downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn) {
     let rawRecord = this.driveRawCache.get(track.fileId);
     if (!rawRecord || rawRecord.updatedAt !== track.updatedAt) {
@@ -2184,102 +2236,115 @@ class EarlisthenicSourceManager {
   }
 
   async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn) {
-    // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
-    const cdnUrls = [
-      track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
-      track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
-    ].filter(Boolean);
+    const abortCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    this._activeAbortControllers = this._activeAbortControllers || new Map();
+    if (abortCtrl) this._activeAbortControllers.set(track.fileId, abortCtrl);
 
-    for (let ci = 0; ci < cdnUrls.length; ci++) {
-      const url = cdnUrls[ci];
-      try {
-        if (typeof fetch !== 'function') break;
-        const res = await fetch(url);
-        if (res && (res.ok || res.status === 206)) {
-          const KNOWN_TRACK_SIZES = {
-            '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
-            '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
-            '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
-            '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
-            '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
-            '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
-            '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
-            '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
-            '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
-          };
-          const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || 50000000;
-          let assembledBuf = null;
+    try {
+      // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
+      const cdnUrls = [
+        track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
+        track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
+      ].filter(Boolean);
 
-          if (res.body && typeof res.body.getReader === 'function') {
-            const reader = res.body.getReader();
-            const chunks = [];
-            let loaded = 0;
-            while (true) {
-              if (abortCheckFn && abortCheckFn()) {
-                try { reader.cancel(); } catch (e) {}
-                const abortedErr = new Error('Track load superseded.');
-                abortedErr.isAborted = true;
-                throw abortedErr;
+      for (let ci = 0; ci < cdnUrls.length; ci++) {
+        const url = cdnUrls[ci];
+        try {
+          if (typeof fetch !== 'function') break;
+          const fetchOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
+          const res = await fetch(url, fetchOpts);
+          if (res && (res.ok || res.status === 206)) {
+            const KNOWN_TRACK_SIZES = {
+              '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
+              '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
+              '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
+              '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
+              '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
+              '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
+              '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
+              '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
+              '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
+            };
+            const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || 50000000;
+            let assembledBuf = null;
+
+            if (res.body && typeof res.body.getReader === 'function') {
+              const reader = res.body.getReader();
+              const chunks = [];
+              let loaded = 0;
+              while (true) {
+                if ((abortCheckFn && abortCheckFn()) || (abortCtrl && abortCtrl.signal.aborted)) {
+                  try { reader.cancel(); } catch (e) {}
+                  const abortedErr = new Error('Track load superseded.');
+                  abortedErr.isAborted = true;
+                  throw abortedErr;
+                }
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value && value.length > 0) {
+                  chunks.push(value);
+                  loaded += value.length;
+                  if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes), track);
+                }
               }
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value && value.length > 0) {
-                chunks.push(value);
-                loaded += value.length;
-                if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes), track);
+              if (totalBytes > 0 && loaded < totalBytes) {
+                throw new Error(`Download incomplete: received ${loaded} of ${totalBytes} bytes for "${track.name}".`);
               }
+              const assembled = new Uint8Array(loaded);
+              let cursor = 0;
+              for (let i = 0; i < chunks.length; i++) {
+                assembled.set(chunks[i], cursor);
+                cursor += chunks[i].length;
+              }
+              assembledBuf = assembled.buffer;
+              if (onProgress) onProgress(loaded, loaded, track);
+            } else {
+              assembledBuf = await res.arrayBuffer();
+              if (totalBytes > 0 && assembledBuf.byteLength < totalBytes) {
+                throw new Error(`Download incomplete: received ${assembledBuf.byteLength} of ${totalBytes} bytes for "${track.name}".`);
+              }
+              if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
             }
-            const expectedMin = (totalBytes > 1024) ? Math.floor(totalBytes * 0.95) : 1024;
-            if (loaded < expectedMin) {
-              throw new Error(`Download truncated: received ${loaded} of ${totalBytes} bytes for "${track.name}".`);
+
+            if (assembledBuf && assembledBuf.byteLength > 1024) {
+              const firstByte = new Uint8Array(assembledBuf, 0, 1)[0];
+              if (firstByte === 0x3C) { // '<' indicates HTML error/sign-in page returned instead of audio
+                throw new Error(`CDN returned HTML instead of audio stream for "${track.name}".`);
+              }
+              if (EarlisthenicSourceManager.isFlacBuffer(assembledBuf)) {
+                assembledBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(assembledBuf);
+              }
+              const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
+              this.driveRawCache.set(track.fileId, rawRecord);
+              if (this.driveRawCache.size > 3) {
+                const oldestRawId = this.driveRawCache.keys().next().value;
+                if (oldestRawId && oldestRawId !== track.fileId && oldestRawId !== this.selectedDriveTrackId) {
+                  this.driveRawCache.delete(oldestRawId);
+                }
+              }
+              await this._idbPutTrack({
+                fileId: track.fileId,
+                name: track.name,
+                updatedAt: track.updatedAt,
+                sizeBytes: assembledBuf.byteLength,
+                arrayBuffer: rawRecord.arrayBuffer,
+                waveform: track.waveform || this.driveWaveformCache.get(track.fileId) || null
+              });
+              return rawRecord;
             }
-            const assembled = new Uint8Array(loaded);
-            let cursor = 0;
-            for (let i = 0; i < chunks.length; i++) {
-              assembled.set(chunks[i], cursor);
-              cursor += chunks[i].length;
-            }
-            assembledBuf = assembled.buffer;
-            if (onProgress) onProgress(loaded, loaded, track);
-          } else {
-            assembledBuf = await res.arrayBuffer();
-            const expectedMin = (totalBytes > 1024) ? Math.floor(totalBytes * 0.95) : 1024;
-            if (assembledBuf.byteLength < expectedMin) {
-              throw new Error(`Download truncated: received ${assembledBuf.byteLength} of ${totalBytes} bytes for "${track.name}".`);
-            }
-            if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
           }
-
-          if (assembledBuf && assembledBuf.byteLength > 1024) {
-            const firstByte = new Uint8Array(assembledBuf, 0, 1)[0];
-            if (firstByte === 0x3C) { // '<' indicates HTML error/sign-in page returned instead of audio
-              throw new Error(`CDN returned HTML instead of audio stream for "${track.name}".`);
-            }
-            if (EarlisthenicSourceManager.isFlacBuffer(assembledBuf)) {
-              assembledBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(assembledBuf);
-            }
-            const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
-            this.driveRawCache.set(track.fileId, rawRecord);
-            if (this.driveRawCache.size > 3) {
-              const oldestRawId = this.driveRawCache.keys().next().value;
-              if (oldestRawId && oldestRawId !== track.fileId && oldestRawId !== this.selectedDriveTrackId) {
-                this.driveRawCache.delete(oldestRawId);
-              }
-            }
-            await this._idbPutTrack({
-              fileId: track.fileId,
-              name: track.name,
-              updatedAt: track.updatedAt,
-              sizeBytes: assembledBuf.byteLength,
-              arrayBuffer: rawRecord.arrayBuffer,
-              waveform: track.waveform || this.driveWaveformCache.get(track.fileId) || null
-            });
-            return rawRecord;
+        } catch (cdnErr) {
+          if (cdnErr && (cdnErr.isAborted || cdnErr.name === 'AbortError' || (abortCtrl && abortCtrl.signal.aborted))) {
+            const abortedErr = new Error('Track load superseded.');
+            abortedErr.isAborted = true;
+            throw abortedErr;
           }
+          // Proceed to fallback CDN or Apps Script bridge
         }
-      } catch (cdnErr) {
-        if (cdnErr && cdnErr.isAborted) throw cdnErr;
-        // Proceed to fallback CDN or Apps Script bridge
+      }
+    } finally {
+      if (abortCtrl && this._activeAbortControllers && this._activeAbortControllers.get(track.fileId) === abortCtrl) {
+        this._activeAbortControllers.delete(track.fileId);
       }
     }
 
@@ -2451,9 +2516,15 @@ class EarlisthenicSourceManager {
     let decoded = null;
     try {
       decoded = (typeof this.engine.safeDecodeAudioData === 'function')
-        ? await this.engine.safeDecodeAudioData(rawRecord.arrayBuffer)
+        ? await this.engine.safeDecodeAudioData(rawRecord.arrayBuffer, abortCheckFn)
         : await ctx.decodeAudioData(rawRecord.arrayBuffer.slice(0));
     } catch (decodeErr) {
+      if (decodeErr && decodeErr.isAborted) throw decodeErr;
+      // Auto-healing: remove corrupt buffer from memory cache and IndexedDB immediately
+      try {
+        this.driveRawCache.delete(track.fileId);
+        await this._idbDeleteTrack(track.fileId);
+      } catch (e) {}
       throw new Error(`Audio decode failed for "${track.name}": ${(decodeErr && decodeErr.message) || 'EncodingError'}`);
     }
     this.driveDecodedCache.set(decodedKey, decoded);
@@ -8542,7 +8613,7 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
   if (priorityFileId) {
     _undergroundPriorityId = priorityFileId;
   }
-  if (!hasAppsScriptBridge()) return;
+  if (!hasAppsScriptBridge() && (!Array.isArray(appState.freeAudioTracks) || appState.freeAudioTracks.length === 0)) return;
   const tracks = Array.isArray(appState.freeAudioTracks) ? appState.freeAudioTracks : [];
   if (tracks.length === 0) return;
 
@@ -8698,9 +8769,13 @@ function cancelPendingDriveTrackLoad() {
     appState._prefetchTimerId = null;
   }
   appState._driveTrackLoadToken++;
+  if (sgSourceManager && typeof sgSourceManager.abortAllDownloads === 'function') {
+    sgSourceManager.abortAllDownloads();
+  }
   appState._loadingDriveTrackId = '';
   appState._loadingDriveShouldPlay = false;
   appState._loadingDrivePromise = null;
+  appState._driveLoadPercent = 0;
   updateTransportPlayUI();
 }
 
@@ -8711,6 +8786,17 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     clearTimeout(appState._prefetchTimerId);
     appState._prefetchTimerId = null;
   }
+
+  // 0. IMMEDIATE FEEDBACK (< 16ms): Update transport button and UI banner synchronously in the touch gesture tick
+  const loadToken = ++appState._driveTrackLoadToken;
+  appState._loadingDriveTrackId = track.fileId;
+  appState._loadingDriveShouldPlay = Boolean(shouldPlay);
+  appState._driveLoadPercent = 0;
+  const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+  if (shouldPlay) {
+    showTransportNotice(`Loading "${cleanName}"...`, false);
+  }
+  updateTransportPlayUI();
 
   const sr = (sgAudioEngine && ((sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || sgAudioEngine.requestedSampleRate)) || 48000;
   const decodedKey = `${track.fileId}@${sr}`;
@@ -8746,9 +8832,9 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     }
     if (raw && raw.arrayBuffer) {
       const decoded = (typeof sgAudioEngine.safeDecodeAudioData === 'function')
-        ? await sgAudioEngine.safeDecodeAudioData(raw.arrayBuffer)
+        ? await sgAudioEngine.safeDecodeAudioData(raw.arrayBuffer, () => loadToken !== appState._driveTrackLoadToken)
         : await sgAudioEngine.ensureContext().decodeAudioData(raw.arrayBuffer.slice(0));
-      if (decoded) {
+      if (decoded && loadToken === appState._driveTrackLoadToken) {
         sgSourceManager.driveDecodedCache.set(decodedKey, decoded);
         sgSourceManager._extractAndStoreWaveform(track, decoded, (trk, wf) => syncTrackWaveformToDriveServer(trk, wf));
         updateWaveformLoopUI();
@@ -8764,23 +8850,22 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         return decoded;
       }
     }
-  } catch (fastDecodeErr) {}
-
-  // 3. NETWORK PATH: If an identical load is already in-flight, attach to its promise!
-  if (appState._loadingDriveTrackId === track.fileId && appState._loadingDrivePromise) {
-    if (shouldPlay) {
-      appState._loadingDriveShouldPlay = true;
-      const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-      showTransportNotice(`Loading "${cleanName}"...`, false);
-      updateTransportPlayUI();
-    }
-    return await appState._loadingDrivePromise;
+  } catch (fastDecodeErr) {
+    // Self-healing: if decode from IDB failed, purge corrupted record so network path can fetch pristine master
+    try {
+      sgSourceManager.driveRawCache.delete(track.fileId);
+      if (typeof sgSourceManager._idbDeleteTrack === 'function') {
+        await sgSourceManager._idbDeleteTrack(track.fileId);
+      }
+    } catch (e) {}
   }
 
-  const loadToken = ++appState._driveTrackLoadToken;
-  appState._loadingDriveTrackId = track.fileId;
-  appState._loadingDriveShouldPlay = !!shouldPlay;
-  updateTransportPlayUI();
+  if (loadToken !== appState._driveTrackLoadToken) return null;
+
+  // 3. NETWORK PATH: If an identical load is already in-flight, attach to its promise!
+  if (appState._loadingDrivePromise && appState._loadingDriveTrackId === track.fileId) {
+    return await appState._loadingDrivePromise;
+  }
 
   // Watchdog timer: 45s timeout protection against stalled background downloads on mobile networks
   let lastProgressTime = Date.now();
@@ -8792,9 +8877,13 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     if (Date.now() - lastProgressTime > 45000) {
       clearInterval(watchdogTimer);
       if (appState._loadingDriveTrackId === track.fileId) {
+        if (sgSourceManager && typeof sgSourceManager.abortTrackDownload === 'function') {
+          sgSourceManager.abortTrackDownload(track.fileId);
+        }
         appState._loadingDriveTrackId = '';
         appState._loadingDriveShouldPlay = false;
         appState._loadingDrivePromise = null;
+        appState._driveLoadPercent = 0;
         updateTransportPlayUI();
       }
     }
@@ -8811,6 +8900,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         track,
         fetchFreeAudioChunkPromise,
         (loaded, total) => {
+          if (loadToken !== appState._driveTrackLoadToken) return;
           lastProgressTime = Date.now();
           if (total > 0) {
             appState._driveLoadPercent = Math.min(99, Math.round((loaded / total) * 100));
@@ -8853,6 +8943,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         appState._loadingDriveTrackId = '';
         appState._loadingDriveShouldPlay = false;
         appState._loadingDrivePromise = null;
+        appState._driveLoadPercent = 0;
         updateTransportPlayUI();
       }
       if (err && err.isAborted) return null;
