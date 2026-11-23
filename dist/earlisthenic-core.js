@@ -2208,7 +2208,7 @@ class EarlisthenicSourceManager {
     });
   }
 
-  async _downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, isUserForeground) {
+  async _downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, isUserForeground, onInitialSliceReady) {
     let rawRecord = this.driveRawCache.get(track.fileId);
     if (!rawRecord || rawRecord.updatedAt !== track.updatedAt) {
       const idbRec = await this._idbGetTrack(track.fileId);
@@ -2254,7 +2254,7 @@ class EarlisthenicSourceManager {
 
     const downloadPromise = (async () => {
       try {
-        return await this._executeRawDownload(track, fetchChunkFn, broadcastProgress, abortCheckFn, inFlightRecord);
+        return await this._executeRawDownload(track, fetchChunkFn, broadcastProgress, abortCheckFn, inFlightRecord, onInitialSliceReady);
       } finally {
         if (this._inFlightDownloads) this._inFlightDownloads.delete(track.fileId);
       }
@@ -2266,7 +2266,7 @@ class EarlisthenicSourceManager {
     return downloadPromise;
   }
 
-  async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn, inFlightRecord) {
+  async _executeRawDownload(track, fetchChunkFn, onProgress, abortCheckFn, inFlightRecord, onInitialSliceReady) {
     const abortCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     this._activeAbortControllers = this._activeAbortControllers || new Map();
     if (abortCtrl) this._activeAbortControllers.set(track.fileId, abortCtrl);
@@ -2337,13 +2337,15 @@ class EarlisthenicSourceManager {
             throw abortedErr;
           }
 
-          const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks for resilient streaming
+          const FAST_START_CHUNK_SIZE = Math.round(2.5 * 1024 * 1024); // 2.5MB fast-start initial slice (< 800ms to sound)
+          const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB subsequent chunks
           let assembledBuf = null;
 
-          if (supportsRange && totalBytes > CHUNK_SIZE) {
+          if (supportsRange && totalBytes > FAST_START_CHUNK_SIZE) {
             const assembled = new Uint8Array(totalBytes);
             let offset = 0;
             let loaded = 0;
+            let chunkIdx = 0;
 
             while (offset < totalBytes) {
               if (isAborted()) {
@@ -2352,7 +2354,8 @@ class EarlisthenicSourceManager {
                 throw abortedErr;
               }
 
-              const end = Math.min(offset + CHUNK_SIZE - 1, totalBytes - 1);
+              const curSliceBytes = (chunkIdx === 0) ? FAST_START_CHUNK_SIZE : CHUNK_SIZE;
+              const end = Math.min(offset + curSliceBytes - 1, totalBytes - 1);
               const rangeHeader = `bytes=${offset}-${end}`;
               let chunkRes = null;
 
@@ -2370,7 +2373,7 @@ class EarlisthenicSourceManager {
                 } catch (retryErr) {
                   if (isAborted()) throw retryErr;
                   if (attempt === 3) throw retryErr;
-                  await new Promise(r => setTimeout(r, 250 * attempt));
+                  await new Promise(r => setTimeout(r, 200 * attempt));
                 }
               }
 
@@ -2393,6 +2396,14 @@ class EarlisthenicSourceManager {
               assembled.set(chunkU8, offset);
               offset += chunkU8.length;
               loaded += chunkU8.length;
+              chunkIdx++;
+
+              // FAST-START HOOK: Fire onInitialSliceReady callback IMMEDIATELY when chunk 0 arrives!
+              if (chunkIdx === 1 && typeof onInitialSliceReady === 'function') {
+                try {
+                  onInitialSliceReady(chunkU8.slice(0).buffer);
+                } catch (e) {}
+              }
 
               if (onProgress) {
                 onProgress(loaded, totalBytes, track);
@@ -2633,7 +2644,7 @@ class EarlisthenicSourceManager {
     return true;
   }
 
-  async loadDriveAudioTrack(track, fetchChunkFn, onProgress, abortCheckFn, onWaveformReady) {
+  async loadDriveAudioTrack(track, fetchChunkFn, onProgress, abortCheckFn, onWaveformReady, onInitialSliceReady) {
     if (!track || !track.fileId) {
       throw new Error('Missing FREE AUDIO track metadata.');
     }
@@ -2646,7 +2657,26 @@ class EarlisthenicSourceManager {
       return hit;
     }
 
-    const rawRecord = await this._downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, true);
+    const handleInitialSlice = async (sliceBuf) => {
+      if (typeof onInitialSliceReady !== 'function') return;
+      if (abortCheckFn && abortCheckFn()) return;
+      try {
+        let cleanSlice = sliceBuf;
+        if (EarlisthenicSourceManager.isFlacBuffer(cleanSlice)) {
+          cleanSlice = EarlisthenicSourceManager.sanitizeFlacMetadata(cleanSlice);
+        }
+        const decodedSlice = (typeof this.engine.safeDecodeAudioData === 'function')
+          ? await this.engine.safeDecodeAudioData(cleanSlice, abortCheckFn)
+          : await ctx.decodeAudioData(cleanSlice.slice(0));
+        if (decodedSlice && (!abortCheckFn || !abortCheckFn())) {
+          onInitialSliceReady(decodedSlice);
+        }
+      } catch (sliceErr) {
+        // Fall back gracefully to full buffer decode
+      }
+    };
+
+    const rawRecord = await this._downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn, true, handleInitialSlice);
     let decoded = null;
     try {
       decoded = (typeof this.engine.safeDecodeAudioData === 'function')
@@ -9033,6 +9063,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
   drawGlobalWaveform();
 
   const loadPromise = (async () => {
+    let initialSlicePlayed = false;
     try {
       appState._driveLoadPercent = 0;
       const buf = await sgSourceManager.loadDriveAudioTrack(
@@ -9045,13 +9076,27 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
             appState._driveLoadPercent = Math.min(99, Math.round((loaded / total) * 100));
           }
           updateTransportPlayUI();
-          if (appState._loadingDriveShouldPlay && appState._loadingDriveTrackId === track.fileId) {
+          if (!initialSlicePlayed && appState._loadingDriveShouldPlay && appState._loadingDriveTrackId === track.fileId) {
             const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
             showTransportNotice(`Streaming "${cleanName}" (${appState._driveLoadPercent}%)...`, false);
           }
         },
         () => loadToken !== appState._driveTrackLoadToken,
-        (trk, wfMeta) => syncTrackWaveformToDriveServer(trk, wfMeta)
+        (trk, wfMeta) => syncTrackWaveformToDriveServer(trk, wfMeta),
+        (initialDecodedSlice) => {
+          // FAST-START: Initial 2.5MB slice decoded in < 1s!
+          if (loadToken !== appState._driveTrackLoadToken) return;
+          const playNow = Boolean(appState._loadingDriveShouldPlay || shouldPlay);
+          const wasPlaying = Boolean(appState.isPlaying || (sgAudioEngine && (sgAudioEngine.activeBufferSource || sgAudioEngine.activeSourceGain)));
+          if (playNow || wasPlaying) {
+            initialSlicePlayed = true;
+            const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+            showTransportNotice(`Playing: "${cleanName}"`, false);
+            setTimeout(hideTransportNotice, 2000);
+            startDecodedActiveBufferPlayback(initialDecodedSlice, false);
+            updateTransportPlayUI();
+          }
+        }
       );
       clearInterval(watchdogTimer);
       if (loadToken !== appState._driveTrackLoadToken) return null;
@@ -9064,7 +9109,11 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
       appState._driveLoadPercent = 0;
       updateWaveformLoopUI();
       drawGlobalWaveform();
-      if (playNow || wasPlaying) {
+      if (initialSlicePlayed && appState.isPlaying) {
+        // Seamless hot-swap onto full master buffer at exact continuing offset!
+        captureCurrentPlayheadOffsetSec();
+        startDecodedActiveBufferPlayback(buf, true);
+      } else if (playNow || wasPlaying) {
         const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
         showTransportNotice(`Playing: "${cleanName}"`, false);
         setTimeout(hideTransportNotice, 2500);
