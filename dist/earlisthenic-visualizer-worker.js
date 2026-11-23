@@ -44,50 +44,55 @@ const PALETTE = {
   }
 };
 
-self.onmessage = function (e) {
-  const msg = e.data;
-  if (!msg) return;
+// Universal Environment Guard: Prevents ReferenceError in server-side runtimes (e.g. Google Apps Script V8)
+var _workerGlobal = typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this);
 
-  switch (msg.type) {
-    case 'INIT':
-      canvas = msg.canvas;
-      ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-      width = msg.width || 400;
-      height = msg.height || 180;
-      dpr = msg.dpr || 1;
-      isDark = !!msg.isDark;
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
-      if (!isRunning) {
-        isRunning = true;
-        requestAnimationFrame(renderLoop);
-      }
-      break;
+if (typeof _workerGlobal !== 'undefined' && (typeof _workerGlobal.addEventListener === 'function' || typeof _workerGlobal.postMessage === 'function')) {
+  _workerGlobal.onmessage = function (e) {
+    const msg = e.data;
+    if (!msg) return;
 
-    case 'RESIZE':
-      width = msg.width || width;
-      height = msg.height || height;
-      dpr = msg.dpr || dpr;
-      if (canvas) {
+    switch (msg.type) {
+      case 'INIT':
+        canvas = msg.canvas;
+        ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+        width = msg.width || 400;
+        height = msg.height || 180;
+        dpr = msg.dpr || 1;
+        isDark = !!msg.isDark;
         canvas.width = Math.round(width * dpr);
         canvas.height = Math.round(height * dpr);
-      }
-      break;
+        if (!isRunning) {
+          isRunning = true;
+          requestAnimationFrame(renderLoop);
+        }
+        break;
 
-    case 'SET_THEME':
-      isDark = !!msg.isDark;
-      break;
+      case 'RESIZE':
+        width = msg.width || width;
+        height = msg.height || height;
+        dpr = msg.dpr || dpr;
+        if (canvas) {
+          canvas.width = Math.round(width * dpr);
+          canvas.height = Math.round(height * dpr);
+        }
+        break;
 
-    case 'UPDATE_AUDIO_DATA':
-      if (msg.freqData) freqData = msg.freqData;
-      if (typeof msg.playheadPct === 'number') playheadPct = msg.playheadPct;
-      if (typeof msg.loopStartPct === 'number') loopStartPct = msg.loopStartPct;
-      if (typeof msg.loopEndPct === 'number') loopEndPct = msg.loopEndPct;
+      case 'SET_THEME':
+        isDark = !!msg.isDark;
+        break;
+
+      case 'UPDATE_AUDIO_DATA':
+        if (msg.freqData) freqData = msg.freqData;
+        if (typeof msg.playheadPct === 'number') playheadPct = msg.playheadPct;
+        if (typeof msg.loopStartPct === 'number') loopStartPct = msg.loopStartPct;
+        if (typeof msg.loopEndPct === 'number') loopEndPct = msg.loopEndPct;
       if (typeof msg.isPlaying === 'boolean') isPlaying = msg.isPlaying;
       if (msg.waveformBins) waveformBins = msg.waveformBins;
       break;
-  }
-};
+    }
+  };
+}
 
 function renderLoop() {
   if (!ctx || !canvas) return;
