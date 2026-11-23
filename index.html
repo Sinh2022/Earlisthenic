@@ -39,8 +39,9 @@
   <link rel="dns-prefetch" href="https://fonts.gstatic.com">
   <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
 
-  <!-- Core Engine CDN Preload: Stream the compressed 92 KB bundle upfront in parallel -->
-  <link rel="preload" href="dist/earlisthenic-core.js?v=2.10.20" as="script" crossorigin>
+  <!-- Progressive Web App Manifest -->
+  <link rel="manifest" href="modules/pwa/manifest.webmanifest">
+  <link rel="preload" href="dist/earlisthenic-core.js?v=2.11.0" as="script" crossorigin>
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23B56D4E'/><path d='M25 65 L35 35 L45 70 L55 20 L65 75 L75 45' fill='none' stroke='%23FBF8F1' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <style>
@@ -220,7 +221,7 @@
   </iframe>
 
   <script>
-    var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec";
+    var gasBaseUrl = "https://script.google.com/macros/s/AKfycbzdEKi9JdGD4ALqHWRTAAS3BhmEGKmb9oe9x0RLYKS1VDOjIbtZHqK9aRJZT0_8PNGH/exec";
 
     // Immediate Early Navigation: Start streaming Google Apps Script payload before subsequent scripts parse
     var urlParams = new URLSearchParams(window.location.search || "");
@@ -338,6 +339,17 @@
         return false;
       }
     });
+
+    // Register Progressive Web App Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('./sw.js').then(function(reg) {
+          console.log('[PWA] Service Worker registered with scope:', reg.scope);
+        }).catch(function(err) {
+          console.warn('[PWA] Service Worker registration failed:', err);
+        });
+      });
+    }
   </script>
 </body>
 </html>

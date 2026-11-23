@@ -671,6 +671,52 @@ class EarlisthenicAudioEngine {
   }
 
   /**
+   * Serialized Audio Decoder with WebKit / iOS Safari concurrency protection,
+   * FLAC metadata auto-sanitization, and single-retry recovery against CoreAudio thread pool contention.
+   */
+  async safeDecodeAudioData(rawArrayBuffer) {
+    if (!rawArrayBuffer || !(rawArrayBuffer instanceof ArrayBuffer || ArrayBuffer.isView(rawArrayBuffer))) {
+      throw new Error('Invalid audio buffer provided for decoding.');
+    }
+    const ab = rawArrayBuffer instanceof ArrayBuffer ? rawArrayBuffer : rawArrayBuffer.buffer;
+    const ctx = this.ensureContext();
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch (e) {}
+    }
+
+    if (!EarlisthenicAudioEngine._decodeQueue) {
+      EarlisthenicAudioEngine._decodeQueue = Promise.resolve();
+    }
+
+    const decodeOperation = EarlisthenicAudioEngine._decodeQueue.then(async () => {
+      let bufToDecode = ab.slice(0);
+      if (typeof EarlisthenicSourceManager !== 'undefined' && typeof EarlisthenicSourceManager.isFlacBuffer === 'function') {
+        if (EarlisthenicSourceManager.isFlacBuffer(bufToDecode)) {
+          bufToDecode = EarlisthenicSourceManager.sanitizeFlacMetadata(bufToDecode);
+        }
+      }
+
+      try {
+        return await ctx.decodeAudioData(bufToDecode);
+      } catch (firstErr) {
+        // WebKit CoreAudio transient thread-exhaustion recovery:
+        // Wait 60ms, create fresh slice from original buffer, and retry once
+        await new Promise(r => setTimeout(r, 60));
+        let retryBuf = ab.slice(0);
+        if (typeof EarlisthenicSourceManager !== 'undefined' && typeof EarlisthenicSourceManager.isFlacBuffer === 'function') {
+          if (EarlisthenicSourceManager.isFlacBuffer(retryBuf)) {
+            retryBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(retryBuf);
+          }
+        }
+        return await ctx.decodeAudioData(retryBuf);
+      }
+    });
+
+    EarlisthenicAudioEngine._decodeQueue = decodeOperation.catch(() => {});
+    return decodeOperation;
+  }
+
+  /**
    * Smoothly ducks active audio to near-silence during a track switch without disconnecting the
    * Web Audio graph, preserving the iOS Safari / mobile media session and preventing autoplay mute.
    */
@@ -1710,8 +1756,15 @@ const STUDIO_LOOP_CATALOG = {
 
 const MAX_LOCAL_AUDIO_FILE_MB = 250;
 const FREE_AUDIO_CHUNK_BYTES = 2 * 1024 * 1024;
-const FREE_AUDIO_IDB_NAME = 'earlisthenic_free_audio_v1';
+const FREE_AUDIO_IDB_NAME = 'earlisthenic_free_audio_v2';
 const FREE_AUDIO_IDB_STORE = 'tracks';
+
+// Auto-purge legacy corrupted IDB cache store if present
+try {
+  if (typeof indexedDB !== 'undefined' && typeof indexedDB.deleteDatabase === 'function') {
+    indexedDB.deleteDatabase('earlisthenic_free_audio_v1');
+  }
+} catch (e) {}
 const SIN_LUT_SIZE = 4096;
 const SIN_LUT = (() => {
   const lut = new Float32Array(SIN_LUT_SIZE + 1);
@@ -1939,6 +1992,85 @@ class EarlisthenicSourceManager {
     return cleanSlice;
   }
 
+  static isValidAudioArrayBuffer(buf) {
+    if (!buf || buf.byteLength < 12) return false;
+    const u8 = new Uint8Array(buf, 0, 12);
+    // Reject HTML/XML text pages from unauthenticated downloads
+    if (u8[0] === 0x3C) return false;
+    // FLAC: 'fLaC'
+    if (u8[0] === 0x66 && u8[1] === 0x4C && u8[2] === 0x61 && u8[3] === 0x43) return true;
+    // WAV / RIFF: 'RIFF'....'WAVE'
+    if (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46) {
+      if (u8[8] === 0x57 && u8[9] === 0x41 && u8[10] === 0x56 && u8[11] === 0x45) return true;
+    }
+    // MP3: 'ID3' or MPEG audio frame sync (0xFFE...)
+    if (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) return true;
+    if (u8[0] === 0xFF && (u8[1] & 0xE0) === 0xE0) return true;
+    return false;
+  }
+
+  static isFlacBuffer(buf) {
+    if (!buf || buf.byteLength < 4) return false;
+    const u8 = new Uint8Array(buf, 0, 4);
+    return u8[0] === 0x66 && u8[1] === 0x4C && u8[2] === 0x61 && u8[3] === 0x43; // 'fLaC'
+  }
+
+  static sanitizeFlacMetadata(buf) {
+    if (!EarlisthenicSourceManager.isFlacBuffer(buf)) return buf;
+    const u8 = new Uint8Array(buf);
+    let offset = 4;
+    let isLast = false;
+    const blocksToKeep = [];
+    let hasStrippedBlocks = false;
+
+    while (!isLast && offset + 4 <= u8.length) {
+      const headerByte = u8[offset];
+      isLast = (headerByte & 0x80) !== 0;
+      const blockType = headerByte & 0x7F;
+      const blockLen = (u8[offset + 1] << 16) | (u8[offset + 2] << 8) | u8[offset + 3];
+      const nextOffset = offset + 4 + blockLen;
+      if (nextOffset > u8.length) break;
+
+      // Drop PICTURE (type 6) and PADDING (type 1) to eliminate WebKit / iOS Safari AudioToolbox decode errors
+      if (blockType === 6 || blockType === 1) {
+        hasStrippedBlocks = true;
+      } else {
+        blocksToKeep.push({
+          type: blockType,
+          data: u8.subarray(offset + 4, nextOffset)
+        });
+      }
+      offset = nextOffset;
+    }
+
+    if (!hasStrippedBlocks || blocksToKeep.length === 0) {
+      return buf;
+    }
+
+    const audioFrames = u8.subarray(offset);
+    let totalSize = 4; // "fLaC"
+    for (let i = 0; i < blocksToKeep.length; i++) {
+      totalSize += 4 + blocksToKeep[i].data.length;
+    }
+    totalSize += audioFrames.length;
+
+    const clean = new Uint8Array(totalSize);
+    clean[0] = 0x66; clean[1] = 0x4C; clean[2] = 0x61; clean[3] = 0x43;
+    let writePos = 4;
+    for (let i = 0; i < blocksToKeep.length; i++) {
+      const isLastBlock = (i === blocksToKeep.length - 1);
+      const b = blocksToKeep[i];
+      clean[writePos] = (isLastBlock ? 0x80 : 0) | (b.type & 0x7F);
+      clean[writePos + 1] = (b.data.length >> 16) & 0xFF;
+      clean[writePos + 2] = (b.data.length >> 8) & 0xFF;
+      clean[writePos + 3] = b.data.length & 0xFF;
+      clean.set(b.data, writePos + 4);
+      writePos += 4 + b.data.length;
+    }
+    clean.set(audioFrames, writePos);
+    return clean.buffer;
+  }
+
   async _idbOpen() {
     if (typeof indexedDB === 'undefined') return null;
     return new Promise((resolve) => {
@@ -2004,11 +2136,11 @@ class EarlisthenicSourceManager {
     let rawRecord = this.driveRawCache.get(track.fileId);
     if (!rawRecord || rawRecord.updatedAt !== track.updatedAt) {
       const idbRec = await this._idbGetTrack(track.fileId);
-      if (idbRec && (idbRec.updatedAt === track.updatedAt || (idbRec.arrayBuffer && idbRec.arrayBuffer.byteLength > 1024))) {
-        if (idbRec.waveform && Array.isArray(idbRec.waveform.mins)) {
-          this.driveWaveformCache.set(track.fileId, idbRec.waveform);
-        }
-        if (idbRec.arrayBuffer) {
+      if (idbRec && idbRec.arrayBuffer && EarlisthenicSourceManager.isValidAudioArrayBuffer(idbRec.arrayBuffer)) {
+        if (!track.updatedAt || idbRec.updatedAt === track.updatedAt) {
+          if (idbRec.waveform && Array.isArray(idbRec.waveform.mins)) {
+            this.driveWaveformCache.set(track.fileId, idbRec.waveform);
+          }
           rawRecord = { updatedAt: track.updatedAt || idbRec.updatedAt, arrayBuffer: idbRec.arrayBuffer };
           this.driveRawCache.set(track.fileId, rawRecord);
         }
@@ -2065,15 +2197,15 @@ class EarlisthenicSourceManager {
         const res = await fetch(url);
         if (res && (res.ok || res.status === 206)) {
           const KNOWN_TRACK_SIZES = {
-            '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32953826,
-            '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46876053,
-            '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56965145,
-            '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50580734,
-            '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58639781,
-            '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69590296,
-            '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 57743092,
-            '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74366094,
-            '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53191801
+            '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
+            '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
+            '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
+            '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
+            '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
+            '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
+            '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
+            '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
+            '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
           };
           const totalBytes = Number(res.headers.get('content-length')) || Number(track.sizeBytes) || (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || 50000000;
           let assembledBuf = null;
@@ -2097,6 +2229,10 @@ class EarlisthenicSourceManager {
                 if (onProgress) onProgress(loaded, Math.max(loaded, totalBytes), track);
               }
             }
+            const expectedMin = (totalBytes > 1024) ? Math.floor(totalBytes * 0.95) : 1024;
+            if (loaded < expectedMin) {
+              throw new Error(`Download truncated: received ${loaded} of ${totalBytes} bytes for "${track.name}".`);
+            }
             const assembled = new Uint8Array(loaded);
             let cursor = 0;
             for (let i = 0; i < chunks.length; i++) {
@@ -2107,10 +2243,21 @@ class EarlisthenicSourceManager {
             if (onProgress) onProgress(loaded, loaded, track);
           } else {
             assembledBuf = await res.arrayBuffer();
+            const expectedMin = (totalBytes > 1024) ? Math.floor(totalBytes * 0.95) : 1024;
+            if (assembledBuf.byteLength < expectedMin) {
+              throw new Error(`Download truncated: received ${assembledBuf.byteLength} of ${totalBytes} bytes for "${track.name}".`);
+            }
             if (onProgress) onProgress(assembledBuf.byteLength, assembledBuf.byteLength, track);
           }
 
           if (assembledBuf && assembledBuf.byteLength > 1024) {
+            const firstByte = new Uint8Array(assembledBuf, 0, 1)[0];
+            if (firstByte === 0x3C) { // '<' indicates HTML error/sign-in page returned instead of audio
+              throw new Error(`CDN returned HTML instead of audio stream for "${track.name}".`);
+            }
+            if (EarlisthenicSourceManager.isFlacBuffer(assembledBuf)) {
+              assembledBuf = EarlisthenicSourceManager.sanitizeFlacMetadata(assembledBuf);
+            }
             const rawRecord = { updatedAt: track.updatedAt, arrayBuffer: assembledBuf };
             this.driveRawCache.set(track.fileId, rawRecord);
             if (this.driveRawCache.size > 3) {
@@ -2268,8 +2415,9 @@ class EarlisthenicSourceManager {
       (track.waveform && track.waveform.updatedAt === track.updatedAt);
     if (!hasMatchingWave && rawRecord && rawRecord.arrayBuffer) {
       try {
-        const ctx = this.engine.ensureContext();
-        const decoded = await ctx.decodeAudioData(rawRecord.arrayBuffer.slice(0));
+        const decoded = (typeof this.engine.safeDecodeAudioData === 'function')
+          ? await this.engine.safeDecodeAudioData(rawRecord.arrayBuffer)
+          : await this.engine.ensureContext().decodeAudioData(rawRecord.arrayBuffer.slice(0));
         const wfMeta = this._extractAndStoreWaveform(track, decoded, onWaveformReady);
         if (wfMeta) {
           this._idbPutTrack({
@@ -2302,7 +2450,9 @@ class EarlisthenicSourceManager {
     const rawRecord = await this._downloadTrackRawArrayBuffer(track, fetchChunkFn, onProgress, abortCheckFn);
     let decoded = null;
     try {
-      decoded = await ctx.decodeAudioData(rawRecord.arrayBuffer.slice(0));
+      decoded = (typeof this.engine.safeDecodeAudioData === 'function')
+        ? await this.engine.safeDecodeAudioData(rawRecord.arrayBuffer)
+        : await ctx.decodeAudioData(rawRecord.arrayBuffer.slice(0));
     } catch (decodeErr) {
       throw new Error(`Audio decode failed for "${track.name}": ${(decodeErr && decodeErr.message) || 'EncodingError'}`);
     }
@@ -2320,7 +2470,9 @@ class EarlisthenicSourceManager {
     const sr = ctx.sampleRate || 48000;
     if (this.sourceMode === 'file' && this.customRawBytes) {
       if (!this.customAudioBuffer || this.customAudioBuffer.sampleRate !== sr) {
-        this.customAudioBuffer = await ctx.decodeAudioData(this.customRawBytes.slice(0));
+        this.customAudioBuffer = (typeof this.engine.safeDecodeAudioData === 'function')
+          ? await this.engine.safeDecodeAudioData(this.customRawBytes)
+          : await ctx.decodeAudioData(this.customRawBytes.slice(0));
         if (this.customFileMeta) this.customFileMeta.sampleRate = sr;
       }
     }
@@ -2336,7 +2488,9 @@ class EarlisthenicSourceManager {
           }
         }
         if (rawRec && rawRec.arrayBuffer) {
-          const decoded = await ctx.decodeAudioData(rawRec.arrayBuffer.slice(0));
+          const decoded = (typeof this.engine.safeDecodeAudioData === 'function')
+            ? await this.engine.safeDecodeAudioData(rawRec.arrayBuffer)
+            : await ctx.decodeAudioData(rawRec.arrayBuffer.slice(0));
           this.driveDecodedCache.set(cacheKey, decoded);
           if (this.driveDecodedCache.size > 24) {
             const oldestKey = this.driveDecodedCache.keys().next().value;
@@ -2491,7 +2645,9 @@ class EarlisthenicSourceManager {
       const decodeCopy = (arrayBuffer && typeof arrayBuffer.slice === 'function')
         ? arrayBuffer.slice(0)
         : arrayBuffer;
-      decodedBuffer = await ctx.decodeAudioData(decodeCopy);
+      decodedBuffer = (typeof this.engine.safeDecodeAudioData === 'function')
+        ? await this.engine.safeDecodeAudioData(arrayBuffer)
+        : await ctx.decodeAudioData(decodeCopy);
     } catch (decodeErr) {
       arrayBuffer = null;
       throw new Error(
@@ -2565,7 +2721,9 @@ class EarlisthenicSourceManager {
       const arrayBuffer = await file.arrayBuffer();
       const ctx = audioCtx || (this.engine && this.engine.ensureContext());
       if (!ctx) return null;
-      const decodedBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      const decodedBuffer = (this.engine && typeof this.engine.safeDecodeAudioData === 'function')
+        ? await this.engine.safeDecodeAudioData(arrayBuffer)
+        : await ctx.decodeAudioData(arrayBuffer.slice(0));
 
       this.customRawBytes = arrayBuffer;
       this.customAudioBuffer = decodedBuffer;
@@ -6073,6 +6231,7 @@ const appState = {
   },
   pendingMigrationObject: null
 };
+window.appState = appState;
 
 function getActiveDataRoot() {
   return appState.demoModeActive && appState.demoDataRoot ? appState.demoDataRoot : appState.data;
@@ -8429,8 +8588,9 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
         try {
           const rawRec = sgSourceManager.driveRawCache.get(track.fileId);
           if (rawRec && rawRec.arrayBuffer) {
-            const ctx = sgAudioEngine.ensureContext();
-            const decoded = await ctx.decodeAudioData(rawRec.arrayBuffer.slice(0));
+            const decoded = (typeof sgAudioEngine.safeDecodeAudioData === 'function')
+              ? await sgAudioEngine.safeDecodeAudioData(rawRec.arrayBuffer)
+              : await sgAudioEngine.ensureContext().decodeAudioData(rawRec.arrayBuffer.slice(0));
             if (decoded) {
               sgSourceManager.driveDecodedCache.set(cacheKey, decoded);
               sgSourceManager._extractAndStoreWaveform(track, decoded, (trk, w) => syncTrackWaveformToDriveServer(trk, w));
@@ -8469,8 +8629,9 @@ async function startUndergroundMaterialsLoader(priorityFileId) {
         if (rawRecord && rawRecord.arrayBuffer) {
           const shouldDecodeToRam = (track.fileId === sgSourceManager.selectedDriveTrackId || track.fileId === priorityFileId || sgSourceManager.driveDecodedCache.size < 3);
           if (shouldDecodeToRam) {
-            const ctx = sgAudioEngine.ensureContext();
-            const decoded = await ctx.decodeAudioData(rawRecord.arrayBuffer.slice(0));
+            const decoded = (typeof sgAudioEngine.safeDecodeAudioData === 'function')
+              ? await sgAudioEngine.safeDecodeAudioData(rawRecord.arrayBuffer)
+              : await sgAudioEngine.ensureContext().decodeAudioData(rawRecord.arrayBuffer.slice(0));
             if (decoded) {
               sgSourceManager.driveDecodedCache.set(cacheKey, decoded);
               const wfMeta = sgSourceManager._extractAndStoreWaveform(track, decoded, (trk, w) => syncTrackWaveformToDriveServer(trk, w));
@@ -8539,6 +8700,7 @@ function cancelPendingDriveTrackLoad() {
   appState._driveTrackLoadToken++;
   appState._loadingDriveTrackId = '';
   appState._loadingDriveShouldPlay = false;
+  appState._loadingDrivePromise = null;
   updateTransportPlayUI();
 }
 
@@ -8574,15 +8736,18 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     let raw = sgSourceManager.driveRawCache.get(track.fileId);
     if (!raw || !raw.arrayBuffer) {
       const idb = await sgSourceManager._idbGetTrack(track.fileId);
-      if (idb && idb.arrayBuffer && idb.arrayBuffer.byteLength > 1024) {
-        raw = { updatedAt: track.updatedAt || idb.updatedAt, arrayBuffer: idb.arrayBuffer };
-        sgSourceManager.driveRawCache.set(track.fileId, raw);
-        if (idb.waveform) sgSourceManager.driveWaveformCache.set(track.fileId, idb.waveform);
+      if (idb && idb.arrayBuffer && typeof EarlisthenicSourceManager.isValidAudioArrayBuffer === 'function' && EarlisthenicSourceManager.isValidAudioArrayBuffer(idb.arrayBuffer)) {
+        if (!track.updatedAt || idb.updatedAt === track.updatedAt) {
+          raw = { updatedAt: track.updatedAt || idb.updatedAt, arrayBuffer: idb.arrayBuffer };
+          sgSourceManager.driveRawCache.set(track.fileId, raw);
+          if (idb.waveform) sgSourceManager.driveWaveformCache.set(track.fileId, idb.waveform);
+        }
       }
     }
     if (raw && raw.arrayBuffer) {
-      const ctx = sgAudioEngine.ensureContext();
-      const decoded = await ctx.decodeAudioData(raw.arrayBuffer.slice(0));
+      const decoded = (typeof sgAudioEngine.safeDecodeAudioData === 'function')
+        ? await sgAudioEngine.safeDecodeAudioData(raw.arrayBuffer)
+        : await sgAudioEngine.ensureContext().decodeAudioData(raw.arrayBuffer.slice(0));
       if (decoded) {
         sgSourceManager.driveDecodedCache.set(decodedKey, decoded);
         sgSourceManager._extractAndStoreWaveform(track, decoded, (trk, wf) => syncTrackWaveformToDriveServer(trk, wf));
@@ -8601,12 +8766,15 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
     }
   } catch (fastDecodeErr) {}
 
-  if (appState._loadingDriveTrackId === track.fileId) {
+  // 3. NETWORK PATH: If an identical load is already in-flight, attach to its promise!
+  if (appState._loadingDriveTrackId === track.fileId && appState._loadingDrivePromise) {
     if (shouldPlay) {
       appState._loadingDriveShouldPlay = true;
+      const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+      showTransportNotice(`Loading "${cleanName}"...`, false);
       updateTransportPlayUI();
     }
-    return null;
+    return await appState._loadingDrivePromise;
   }
 
   const loadToken = ++appState._driveTrackLoadToken;
@@ -8626,6 +8794,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
       if (appState._loadingDriveTrackId === track.fileId) {
         appState._loadingDriveTrackId = '';
         appState._loadingDriveShouldPlay = false;
+        appState._loadingDrivePromise = null;
         updateTransportPlayUI();
       }
     }
@@ -8635,58 +8804,69 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
   updateWaveformLoopUI();
   drawGlobalWaveform();
 
-  try {
-    appState._driveLoadPercent = 0;
-    const buf = await sgSourceManager.loadDriveAudioTrack(
-      track,
-      fetchFreeAudioChunkPromise,
-      (loaded, total) => {
-        lastProgressTime = Date.now();
-        if (total > 0) {
-          appState._driveLoadPercent = Math.min(99, Math.round((loaded / total) * 100));
-        }
-        updateTransportPlayUI();
-        if (appState._loadingDriveShouldPlay || appState.isPlaying) {
-          const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-          showTransportNotice(`Streaming "${cleanName}" (${appState._driveLoadPercent}%)...`, false);
-        }
-      },
-      () => loadToken !== appState._driveTrackLoadToken,
-      (trk, wfMeta) => syncTrackWaveformToDriveServer(trk, wfMeta)
-    );
-    clearInterval(watchdogTimer);
-    if (loadToken !== appState._driveTrackLoadToken) return null;
+  const loadPromise = (async () => {
+    try {
+      appState._driveLoadPercent = 0;
+      const buf = await sgSourceManager.loadDriveAudioTrack(
+        track,
+        fetchFreeAudioChunkPromise,
+        (loaded, total) => {
+          lastProgressTime = Date.now();
+          if (total > 0) {
+            appState._driveLoadPercent = Math.min(99, Math.round((loaded / total) * 100));
+          }
+          updateTransportPlayUI();
+          if (appState._loadingDriveShouldPlay && appState._loadingDriveTrackId === track.fileId) {
+            const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+            showTransportNotice(`Streaming "${cleanName}" (${appState._driveLoadPercent}%)...`, false);
+          }
+        },
+        () => loadToken !== appState._driveTrackLoadToken,
+        (trk, wfMeta) => syncTrackWaveformToDriveServer(trk, wfMeta)
+      );
+      clearInterval(watchdogTimer);
+      if (loadToken !== appState._driveTrackLoadToken) return null;
 
-    const playNow = Boolean(appState._loadingDriveShouldPlay);
-    const wasPlaying = Boolean(appState.isPlaying || (sgAudioEngine && (sgAudioEngine.activeBufferSource || sgAudioEngine.activeSourceGain)));
-    appState._loadingDriveTrackId = '';
-    appState._loadingDriveShouldPlay = false;
-    appState._driveLoadPercent = 0;
-    updateWaveformLoopUI();
-    drawGlobalWaveform();
-    if (playNow || wasPlaying) {
-      const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-      showTransportNotice(`Playing: "${cleanName}"`, false);
-      setTimeout(hideTransportNotice, 2500);
-      startDecodedActiveBufferPlayback(buf, true);
-    } else {
-      updateTransportPlayUI();
-    }
-    scheduleFreeAudioLibraryPrewarm(track.fileId);
-    return buf;
-  } catch (err) {
-    clearInterval(watchdogTimer);
-    if (appState._loadingDriveTrackId === track.fileId && loadToken === appState._driveTrackLoadToken) {
+      const playNow = Boolean(appState._loadingDriveShouldPlay);
+      const wasPlaying = Boolean(appState.isPlaying || (sgAudioEngine && (sgAudioEngine.activeBufferSource || sgAudioEngine.activeSourceGain)));
       appState._loadingDriveTrackId = '';
       appState._loadingDriveShouldPlay = false;
-      updateTransportPlayUI();
+      appState._loadingDrivePromise = null;
+      appState._driveLoadPercent = 0;
+      updateWaveformLoopUI();
+      drawGlobalWaveform();
+      if (playNow || wasPlaying) {
+        const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+        showTransportNotice(`Playing: "${cleanName}"`, false);
+        setTimeout(hideTransportNotice, 2500);
+        startDecodedActiveBufferPlayback(buf, true);
+      } else {
+        hideTransportNotice();
+        updateTransportPlayUI();
+      }
+      scheduleFreeAudioLibraryPrewarm(track.fileId);
+      return buf;
+    } catch (err) {
+      clearInterval(watchdogTimer);
+      const wasShouldPlay = Boolean(shouldPlay || appState._loadingDriveShouldPlay || appState.isPlaying);
+      if (appState._loadingDriveTrackId === track.fileId && loadToken === appState._driveTrackLoadToken) {
+        appState._loadingDriveTrackId = '';
+        appState._loadingDriveShouldPlay = false;
+        appState._loadingDrivePromise = null;
+        updateTransportPlayUI();
+      }
+      if (err && err.isAborted) return null;
+      if (wasShouldPlay) {
+        showTransportNotice((err && err.message) || `Could not load "${track.name}" from FREE AUDIO. Continuing playback.`, false);
+      } else {
+        hideTransportNotice();
+      }
+      return null;
     }
-    if (err && err.isAborted) return null;
-    if (shouldPlay || appState._loadingDriveShouldPlay || appState.isPlaying) {
-      showTransportNotice((err && err.message) || `Could not load "${track.name}" from FREE AUDIO. Continuing playback.`, false);
-    }
-    return null;
-  }
+  })();
+
+  appState._loadingDrivePromise = loadPromise;
+  return await loadPromise;
 }
 
 function startDecodedActiveBufferPlayback(buf, useHotSwap) {
@@ -8756,24 +8936,27 @@ function selectStudioLoop(loopKey) {
     if (track) {
       const sr = (sgAudioEngine && ((sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || (typeof sgAudioEngine.actualSampleRate === 'number' && sgAudioEngine.actualSampleRate))) || 48000;
       const cached = sgSourceManager.driveDecodedCache.get(`${fileId}@${sr}`);
+      const wfMeta = sgSourceManager.getSelectedDriveWaveformMeta();
+      const dur = (wfMeta && wfMeta.durationSec) ? wfMeta.durationSec : 0;
+      appState.playbackOffsetSec = 0;
+      if (typeof updatePlayheadUI === 'function') {
+        updatePlayheadUI(0, dur);
+      }
       // Draw full-song waveform immediately from stored Drive/IndexedDB peak envelope
       updateWaveformLoopUI();
       drawGlobalWaveform();
       if (cached) {
-        appState.playbackOffsetSec = 0;
         if (wasPlaying) startDecodedActiveBufferPlayback(cached, true);
         else scheduleFreeAudioLibraryPrewarm(fileId);
       } else if (wasPlaying) {
         // Immediate switch: duck previous track into silence without disconnecting Web Audio graph,
         // keeping the iOS Safari audio session active to avoid autoplay mute.
-        appState.playbackOffsetSec = 0;
         if (typeof sgAudioEngine.duckActiveSourcesForTrackSwitch === 'function') {
           sgAudioEngine.duckActiveSourcesForTrackSwitch();
         }
         loadDriveTrackAndMaybePlay(track, true);
       } else {
-        appState.playbackOffsetSec = 0;
-        // Pre-decode from IDB in background so Play Audio is < 1ms
+        // Pre-decode from IDB/CDN in background so Play Audio is instantaneous
         loadDriveTrackAndMaybePlay(track, false);
       }
     }
@@ -8781,6 +8964,10 @@ function selectStudioLoop(loopKey) {
     cancelPendingDriveTrackLoad();
     sgSourceManager.selectedDriveTrackId = '';
     sgSourceManager.studioLoopKey = key;
+    appState.playbackOffsetSec = 0;
+    if (typeof updatePlayheadUI === 'function') {
+      updatePlayheadUI(0, 4.0);
+    }
     updateWaveformLoopUI();
     drawGlobalWaveform();
     if (appState.isPlaying) startAudioPlayback();
@@ -9055,7 +9242,9 @@ if (_freeAudioUploadInputEl) {
           try {
             const ctx = sgAudioEngine.ensureContext();
             const fileArrBuf = await readBlobSliceAsArrayBuffer(file);
-            const decodedUp = await ctx.decodeAudioData(fileArrBuf.slice(0));
+            const decodedUp = (typeof sgAudioEngine.safeDecodeAudioData === 'function')
+              ? await sgAudioEngine.safeDecodeAudioData(fileArrBuf)
+              : await sgAudioEngine.ensureContext().decodeAudioData(fileArrBuf.slice(0));
             const wfMeta = EarlisthenicSourceManager.extractCompactWaveform(decodedUp, 128);
             if (wfMeta) {
               wfMeta.updatedAt = finalRes.track.updatedAt;
@@ -9207,9 +9396,6 @@ function startAudioPlayback() {
       if (track) {
         // True Lossless Experience: Never play a placeholder or swap from an unwanted sound!
         // Show clean loading state on transport button and banner, unlock audio hardware silently:
-        appState._loadingDriveTrackId = track.fileId;
-        appState._loadingDriveShouldPlay = true;
-        updateTransportPlayUI();
         const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
         showTransportNotice(`Loading "${cleanName}"...`, false);
         loadDriveTrackAndMaybePlay(track, true);
