@@ -239,7 +239,7 @@
       targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cleanQuery;
     }
     // 1-minute bucketed cache tag: ensures fast CDN edge re-use while picking up deployments promptly
-    var cacheBucket = "_v=2.10.28_" + Math.floor(Date.now() / 60000);
+    var cacheBucket = "_v=2.10.29_" + Math.floor(Date.now() / 60000);
     targetUrl += (targetUrl.indexOf("?") === -1 ? "?" : "&") + cacheBucket;
     if (hash) {
       targetUrl += hash;
