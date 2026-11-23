@@ -2,7 +2,7 @@
   {
     "fileId": "1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8",
     "name": "Bầu Trời Mới.flac",
-    "sizeBytes": 32537782,
+    "sizeBytes": 32953826,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-12T10:21:30.110Z",
@@ -410,7 +410,7 @@
   {
     "fileId": "1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb",
     "name": "Giá Như.flac",
-    "sizeBytes": 46337201,
+    "sizeBytes": 46876053,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-12T10:21:39.755Z",
@@ -818,7 +818,7 @@
   {
     "fileId": "1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS",
     "name": "Không Đau Nữa Rồi.flac",
-    "sizeBytes": 56377608,
+    "sizeBytes": 56965145,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-12T10:21:15.133Z",
@@ -1219,14 +1219,14 @@
     },
     "sampleRate": 44100,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_Dau_Nua_Roi.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_Dau_Nua_Roi.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_dau_Nua_Roi.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_dau_Nua_Roi.flac",
     "qualityBadge": "Master 24b/44.1k"
   },
   {
     "fileId": "1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du",
     "name": "Kẽo Cà Kẽo Kẹt.flac",
-    "sizeBytes": 50562654,
+    "sizeBytes": 50580734,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-12T10:21:49.245Z",
@@ -1634,7 +1634,7 @@
   {
     "fileId": "15D1oEY26FSQyFY3G7NUzeITp3z53mr94",
     "name": "Rời Bỏ.flac",
-    "sizeBytes": 58506448,
+    "sizeBytes": 58639781,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-19T06:21:01.651Z",
@@ -2042,7 +2042,7 @@
   {
     "fileId": "1WQwqRzg-J63tL1WkBf23x1XedTlV32vf",
     "name": "Skyfire (Original Mix).flac",
-    "sizeBytes": 69572263,
+    "sizeBytes": 69590296,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-19T06:20:53.400Z",
@@ -2450,7 +2450,7 @@
   {
     "fileId": "1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq",
     "name": "Skyfire (Steve Allen Devon Colombage Remix).flac",
-    "sizeBytes": 56077953,
+    "sizeBytes": 57743092,
     "mimeType": "application/x-flac",
     "extension": ".flac",
     "updatedAt": "2026-11-19T06:18:21.751Z",
@@ -2858,7 +2858,7 @@
   {
     "fileId": "1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB",
     "name": "Trời Giấu Trời Mang Đi.flac",
-    "sizeBytes": 74348212,
+    "sizeBytes": 74366094,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-12T10:22:05.039Z",
@@ -3259,14 +3259,14 @@
     },
     "sampleRate": 96000,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_Di.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_Di.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_di.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_di.flac",
     "qualityBadge": "Master 24b/96k"
   },
   {
     "fileId": "1bscec-Zh2gft52WsCVobyXzhVAMXhSIL",
     "name": "Tìm Em.flac",
-    "sizeBytes": 53091872,
+    "sizeBytes": 53191801,
     "mimeType": "audio/flac",
     "extension": ".flac",
     "updatedAt": "2026-11-19T06:21:06.631Z",
