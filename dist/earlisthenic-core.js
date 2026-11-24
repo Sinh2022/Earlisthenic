@@ -12919,8 +12919,7 @@ const COMMAND_PALETTE_COMMANDS = [
   { id: 'pref-sfx', category: 'Preferences', title: 'Toggle UI Sound Effects', desc: 'Enable/disable psychoacoustic tactile sound cues', icon: 'fa-volume-high', action: () => toggleUiSfx() },
   { id: 'action-sync', category: 'System', title: 'Sync with Google Drive Now', desc: 'Flush all pending question events to cloud storage', icon: 'fa-rotate', action: () => triggerManualSync() },
   { id: 'action-backup', category: 'System', title: 'Create Drive Backup Snapshot', desc: 'Create an immutable historical backup point on Drive', icon: 'fa-floppy-disk', action: () => createDriveSnapshotBackup('manual') },
-  { id: 'action-profile', category: 'Account', title: 'Manage User Profile & Scope', desc: 'View current identity, device ID, and membership status', icon: 'fa-user-shield', action: () => openProfileModal() },
-  { id: 'action-fatigue', category: 'Health', title: 'Check Ear Acuity & Fatigue', desc: 'Real-time NEFP neural ear fatigue status & listening advice', icon: 'fa-brain', action: () => openEarFatigueModal() }
+  { id: 'action-profile', category: 'Account', title: 'Manage User Profile & Scope', desc: 'View current identity, device ID, and membership status', icon: 'fa-user-shield', action: () => openProfileModal() }
 ];
 
 let _neuralSessionTracker = {
@@ -12956,73 +12955,15 @@ function trackNeuralSessionInteraction(scoreOutcome, reactionSec) {
       ? (tracker.recentErrors[tracker.recentErrors.length - 1] - tracker.recentErrors[0]) / tracker.recentErrors.length
       : 0;
 
+    // Ambient AI: Off-thread neural fatigue and acuity calculation for Bayesian JND difficulty adaptation
     window.earlisthenicNeuralEngine.predictEarFatigue({
       durationMin: durMin,
       rmsDb: -14.0,
       errorVelocity: errorVelocity,
       reactionDriftMs: reactionDriftMs,
       consecFails: tracker.consecutiveFails
-    }).then(res => {
-      if (res) updateNeuralFatigueUI(res);
     }).catch(() => {});
   } catch (e) {}
-}
-
-function updateNeuralFatigueUI(state) {
-  const label = document.getElementById('neural-fatigue-label');
-  const dot = document.getElementById('neural-fatigue-dot');
-  if (!label || !dot) return;
-
-  const acuity = typeof state.highFreqAcuityPercent === 'number' ? state.highFreqAcuityPercent : 100;
-  label.textContent = `${acuity}% Acuity`;
-
-  if (state.status === 'fatigued') {
-    dot.className = 'w-2 h-2 rounded-full bg-[#DC2626] animate-pulse shrink-0';
-    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#DC2626]';
-  } else if (state.status === 'mild_strain') {
-    dot.className = 'w-2 h-2 rounded-full bg-[#D97706] shrink-0';
-    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#D97706]';
-  } else {
-    dot.className = 'w-2 h-2 rounded-full bg-[#5E6B50] shrink-0';
-    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#302D28] dark:text-[#EAE2D4]';
-  }
-
-  // Update modal contents if open
-  const statusEl = document.getElementById('fatigue-modal-status-text');
-  const acuityEl = document.getElementById('fatigue-modal-acuity-val');
-  const lossEl = document.getElementById('fatigue-modal-loss-val');
-  const timeEl = document.getElementById('fatigue-modal-time-val');
-  const adviceEl = document.getElementById('fatigue-modal-advice-text');
-
-  if (statusEl) {
-    statusEl.textContent = state.status === 'fatigued' ? 'Fatigue Detected' : (state.status === 'mild_strain' ? 'Mild Auditory Strain' : 'Optimal Hearing State');
-    statusEl.className = state.status === 'fatigued' ? 'text-sm font-bold text-[#DC2626]' : (state.status === 'mild_strain' ? 'text-sm font-bold text-[#D97706]' : 'text-sm font-bold text-[#5E6B50]');
-  }
-  if (acuityEl) acuityEl.textContent = `${acuity}%`;
-  if (lossEl) lossEl.textContent = `${state.estimatedSensitivityLossDb || 0.0} dB`;
-  if (timeEl) {
-    const mins = Math.round((Date.now() - _neuralSessionTracker.sessionStartMs) / 60000);
-    timeEl.textContent = `${mins} min`;
-  }
-  if (adviceEl && state.advice) adviceEl.textContent = state.advice;
-}
-
-function openEarFatigueModal() {
-  const modal = document.getElementById('modal-neural-fatigue');
-  if (!modal) return;
-  modal.classList.remove('hidden');
-  if (window.earlisthenicNeuralEngine) {
-    updateNeuralFatigueUI(window.earlisthenicNeuralEngine.getFatigueState());
-  }
-  if (typeof sgAudioEngine !== 'undefined') {
-    sgAudioEngine.playUiCue('click', appState.settings.uiSfxEnabled);
-  }
-}
-
-function closeEarFatigueModal() {
-  const modal = document.getElementById('modal-neural-fatigue');
-  if (!modal) return;
-  modal.classList.add('hidden');
 }
 
 function openCommandPalette() {
