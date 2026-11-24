@@ -2092,6 +2092,26 @@ class EarlisthenicSourceManager {
     return 'https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/' + fn;
   }
 
+  static getTrackR2Url(track) {
+    if (!track) return null;
+    const fileIdMap = {
+      '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 'Bau_Troi_Moi.flac',
+      '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 'Gia_Nhu.flac',
+      '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 'Khong_Dau_Nua_Roi.flac',
+      '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 'Keo_Ca_Keo_Ket.flac',
+      '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 'Roi_Bo.flac',
+      '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 'Skyfire_Original_Mix.flac',
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 'Skyfire_Steve_Allen_Devon_Colombage_Remix.flac',
+      '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 'Troi_Giau_Troi_Mang_Di.flac',
+      '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 'Tim_Em.flac'
+    };
+    if (track.r2Url) return track.r2Url;
+    const fn = (track.fileId && fileIdMap[track.fileId]) || null;
+    if (!fn) return null;
+    const r2Base = (typeof window !== 'undefined' && window.EARLISTHENIC_R2_BASE) ? window.EARLISTHENIC_R2_BASE : 'https://media.earlisthenic.com';
+    return r2Base + '/' + fn;
+  }
+
   setDriveTracks(tracks) {
     this.driveTracks = Array.isArray(tracks) ? tracks.slice() : [];
     for (let i = 0; i < this.driveTracks.length; i++) {
@@ -2107,6 +2127,7 @@ class EarlisthenicSourceManager {
             .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
             .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
         }
+        if (!t.r2Url) t.r2Url = EarlisthenicSourceManager.getTrackR2Url(t);
         if (!t.cdnUrl) t.cdnUrl = EarlisthenicSourceManager.getTrackCdnUrl(t);
         if (!t.fallbackCdnUrl) t.fallbackCdnUrl = EarlisthenicSourceManager.getTrackFallbackCdnUrl(t);
         if (t.fileId && t.waveform && Array.isArray(t.waveform.mins) && t.waveform.mins.length > 0) {
@@ -2408,6 +2429,7 @@ class EarlisthenicSourceManager {
     if (existing && existing.arrayBuffer) return existing;
 
     const cdnUrls = [
+      track.r2Url || EarlisthenicSourceManager.getTrackR2Url(track),
       track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
       track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
     ].filter(Boolean);
@@ -2513,6 +2535,7 @@ class EarlisthenicSourceManager {
     try {
       // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
       const cdnUrls = [
+        track.r2Url || EarlisthenicSourceManager.getTrackR2Url(track),
         track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
         track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
       ].filter(Boolean);
@@ -3669,9 +3692,20 @@ function generateQuestionTarget(gameMode, level, mockConfig) {
   const baseQ = (mockConfig && mockConfig.q) ? Number(mockConfig.q) : lvlSpec.q;
   const baseGain = (mockConfig && mockConfig.gain) ? Number(mockConfig.gain) : lvlSpec.gain;
 
+  // Adaptive Bayesian Neural JND Micro-Compensation
+  let adjustedGain = baseGain;
+  if (typeof window !== 'undefined' && window.earlisthenicNeuralEngine) {
+    try {
+      const fState = window.earlisthenicNeuralEngine.getFatigueState();
+      if (fState && typeof fState.estimatedSensitivityLossDb === 'number' && fState.estimatedSensitivityLossDb > 0.5) {
+        adjustedGain = Math.round((baseGain + Math.min(1.5, fState.estimatedSensitivityLossDb * 0.4)) * 10) / 10;
+      }
+    } catch (e) {}
+  }
+
   const target = {
     frequencyHz: 1000,
-    gainDb: baseGain,
+    gainDb: adjustedGain,
     q: baseQ,
     filterType: 'lowpass',
     pan: 0.0,
@@ -11792,6 +11826,9 @@ function evaluateArenaRound(isTimeout = false) {
     appState.activeSession.questionsCount = (appState.activeSession.questionsCount || 0) + 1;
   }
 
+  // Real-time NEFP Neural Ear Fatigue & Acuity Tracking
+  trackNeuralSessionInteraction(scoreOutcome, reactionSec);
+
   const summaries = formatUserAndTargetSummary(appState.gameMode);
   const questionEvent = {
     eventId: generateUuid(),
@@ -12882,8 +12919,111 @@ const COMMAND_PALETTE_COMMANDS = [
   { id: 'pref-sfx', category: 'Preferences', title: 'Toggle UI Sound Effects', desc: 'Enable/disable psychoacoustic tactile sound cues', icon: 'fa-volume-high', action: () => toggleUiSfx() },
   { id: 'action-sync', category: 'System', title: 'Sync with Google Drive Now', desc: 'Flush all pending question events to cloud storage', icon: 'fa-rotate', action: () => triggerManualSync() },
   { id: 'action-backup', category: 'System', title: 'Create Drive Backup Snapshot', desc: 'Create an immutable historical backup point on Drive', icon: 'fa-floppy-disk', action: () => createDriveSnapshotBackup('manual') },
-  { id: 'action-profile', category: 'Account', title: 'Manage User Profile & Scope', desc: 'View current identity, device ID, and membership status', icon: 'fa-user-shield', action: () => openProfileModal() }
+  { id: 'action-profile', category: 'Account', title: 'Manage User Profile & Scope', desc: 'View current identity, device ID, and membership status', icon: 'fa-user-shield', action: () => openProfileModal() },
+  { id: 'action-fatigue', category: 'Health', title: 'Check Ear Acuity & Fatigue', desc: 'Real-time NEFP neural ear fatigue status & listening advice', icon: 'fa-brain', action: () => openEarFatigueModal() }
 ];
+
+let _neuralSessionTracker = {
+  sessionStartMs: Date.now(),
+  consecutiveFails: 0,
+  recentErrors: [],
+  reactionTimes: []
+};
+
+function trackNeuralSessionInteraction(scoreOutcome, reactionSec) {
+  if (typeof window === 'undefined' || !window.earlisthenicNeuralEngine) return;
+  try {
+    const tracker = _neuralSessionTracker;
+    const isFail = !scoreOutcome || (!scoreOutcome.passed && !scoreOutcome.isNearMiss);
+    if (isFail) {
+      tracker.consecutiveFails++;
+    } else {
+      tracker.consecutiveFails = 0;
+    }
+
+    const durMin = Math.max(0.1, (Date.now() - tracker.sessionStartMs) / 60000);
+    const rSec = Math.max(0.1, Number(reactionSec) || 2.0);
+    tracker.reactionTimes.push(rSec);
+    if (tracker.reactionTimes.length > 20) tracker.reactionTimes.shift();
+
+    const avgReaction = tracker.reactionTimes.reduce((a, b) => a + b, 0) / tracker.reactionTimes.length;
+    const reactionDriftMs = Math.round((rSec - avgReaction) * 1000);
+
+    const errorPct = scoreOutcome ? Math.max(0, 100 - (Number(scoreOutcome.accuracy) || 0)) : 50;
+    tracker.recentErrors.push(errorPct);
+    if (tracker.recentErrors.length > 10) tracker.recentErrors.shift();
+    const errorVelocity = tracker.recentErrors.length >= 2 
+      ? (tracker.recentErrors[tracker.recentErrors.length - 1] - tracker.recentErrors[0]) / tracker.recentErrors.length
+      : 0;
+
+    window.earlisthenicNeuralEngine.predictEarFatigue({
+      durationMin: durMin,
+      rmsDb: -14.0,
+      errorVelocity: errorVelocity,
+      reactionDriftMs: reactionDriftMs,
+      consecFails: tracker.consecutiveFails
+    }).then(res => {
+      if (res) updateNeuralFatigueUI(res);
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+function updateNeuralFatigueUI(state) {
+  const label = document.getElementById('neural-fatigue-label');
+  const dot = document.getElementById('neural-fatigue-dot');
+  if (!label || !dot) return;
+
+  const acuity = typeof state.highFreqAcuityPercent === 'number' ? state.highFreqAcuityPercent : 100;
+  label.textContent = `${acuity}% Acuity`;
+
+  if (state.status === 'fatigued') {
+    dot.className = 'w-2 h-2 rounded-full bg-[#DC2626] animate-pulse shrink-0';
+    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#DC2626]';
+  } else if (state.status === 'mild_strain') {
+    dot.className = 'w-2 h-2 rounded-full bg-[#D97706] shrink-0';
+    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#D97706]';
+  } else {
+    dot.className = 'w-2 h-2 rounded-full bg-[#5E6B50] shrink-0';
+    label.className = 'text-[10px] sm:text-[11px] font-mono-tabular font-semibold text-[#302D28] dark:text-[#EAE2D4]';
+  }
+
+  // Update modal contents if open
+  const statusEl = document.getElementById('fatigue-modal-status-text');
+  const acuityEl = document.getElementById('fatigue-modal-acuity-val');
+  const lossEl = document.getElementById('fatigue-modal-loss-val');
+  const timeEl = document.getElementById('fatigue-modal-time-val');
+  const adviceEl = document.getElementById('fatigue-modal-advice-text');
+
+  if (statusEl) {
+    statusEl.textContent = state.status === 'fatigued' ? 'Fatigue Detected' : (state.status === 'mild_strain' ? 'Mild Auditory Strain' : 'Optimal Hearing State');
+    statusEl.className = state.status === 'fatigued' ? 'text-sm font-bold text-[#DC2626]' : (state.status === 'mild_strain' ? 'text-sm font-bold text-[#D97706]' : 'text-sm font-bold text-[#5E6B50]');
+  }
+  if (acuityEl) acuityEl.textContent = `${acuity}%`;
+  if (lossEl) lossEl.textContent = `${state.estimatedSensitivityLossDb || 0.0} dB`;
+  if (timeEl) {
+    const mins = Math.round((Date.now() - _neuralSessionTracker.sessionStartMs) / 60000);
+    timeEl.textContent = `${mins} min`;
+  }
+  if (adviceEl && state.advice) adviceEl.textContent = state.advice;
+}
+
+function openEarFatigueModal() {
+  const modal = document.getElementById('modal-neural-fatigue');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  if (window.earlisthenicNeuralEngine) {
+    updateNeuralFatigueUI(window.earlisthenicNeuralEngine.getFatigueState());
+  }
+  if (typeof sgAudioEngine !== 'undefined') {
+    sgAudioEngine.playUiCue('click', appState.settings.uiSfxEnabled);
+  }
+}
+
+function closeEarFatigueModal() {
+  const modal = document.getElementById('modal-neural-fatigue');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
 
 function openCommandPalette() {
   const modal = document.getElementById('command-palette-modal');
