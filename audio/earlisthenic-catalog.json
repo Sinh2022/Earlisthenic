@@ -1219,8 +1219,8 @@
     },
     "sampleRate": 44100,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_dau_Nua_Roi.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_dau_Nua_Roi.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Khong_Dau_Nua_Roi.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Khong_Dau_Nua_Roi.flac",
     "qualityBadge": "Master 24b/44.1k"
   },
   {
@@ -3259,8 +3259,8 @@
     },
     "sampleRate": 96000,
     "bitDepth": 24,
-    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_di.flac",
-    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_di.flac",
+    "cdnUrl": "https://sinh2022.github.io/Earlisthenic/audio/Troi_Giau_Troi_Mang_Di.flac",
+    "fallbackCdnUrl": "https://raw.githubusercontent.com/Sinh2022/Earlisthenic/main/audio/Troi_Giau_Troi_Mang_Di.flac",
     "qualityBadge": "Master 24b/96k"
   },
   {
