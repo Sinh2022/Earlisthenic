@@ -9475,7 +9475,9 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
   const decodedKey = `${track.fileId}@${sr}`;
 
   // 1. FAST PATH (< 1ms): Already decoded in RAM
-  const memDecoded = sgSourceManager.driveDecodedCache.get(decodedKey);
+  const memDecoded = (typeof sgSourceManager.getDecodedCache === 'function')
+    ? sgSourceManager.getDecodedCache(decodedKey)
+    : sgSourceManager.driveDecodedCache.get(decodedKey);
   if (memDecoded) {
     if (shouldPlay) {
       hideTransportNotice();
@@ -9498,7 +9500,11 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
       if (idb && idb.arrayBuffer && typeof EarlisthenicSourceManager.isValidAudioArrayBuffer === 'function' && EarlisthenicSourceManager.isValidAudioArrayBuffer(idb.arrayBuffer)) {
         if (!track.updatedAt || idb.updatedAt === track.updatedAt) {
           raw = { updatedAt: track.updatedAt || idb.updatedAt, arrayBuffer: idb.arrayBuffer };
-          sgSourceManager.driveRawCache.set(track.fileId, raw);
+          if (typeof sgSourceManager.setRawCache === 'function') {
+            sgSourceManager.setRawCache(track.fileId, raw);
+          } else {
+            sgSourceManager.driveRawCache.set(track.fileId, raw);
+          }
           if (idb.waveform) sgSourceManager.driveWaveformCache.set(track.fileId, idb.waveform);
         }
       }
@@ -9508,7 +9514,11 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         ? await sgAudioEngine.safeDecodeAudioData(raw.arrayBuffer, () => loadToken !== appState._driveTrackLoadToken)
         : await sgAudioEngine.ensureContext().decodeAudioData(raw.arrayBuffer.slice(0));
       if (decoded && loadToken === appState._driveTrackLoadToken) {
-        sgSourceManager.driveDecodedCache.set(decodedKey, decoded);
+        if (typeof sgSourceManager.setDecodedCache === 'function') {
+          sgSourceManager.setDecodedCache(decodedKey, decoded);
+        } else {
+          sgSourceManager.driveDecodedCache.set(decodedKey, decoded);
+        }
         sgSourceManager._extractAndStoreWaveform(track, decoded, (trk, wf) => syncTrackWaveformToDriveServer(trk, wf));
         updateWaveformLoopUI();
         drawGlobalWaveform();
@@ -10293,12 +10303,30 @@ function startAudioPlayback() {
   if (sgSourceManager.sourceMode === 'studio' && sgSourceManager.selectedDriveTrackId) {
     const sr = (sgAudioEngine && sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || 48000;
     const cacheKey = `${sgSourceManager.selectedDriveTrackId}@${sr}`;
-    const cachedDriveBuf = sgSourceManager.driveDecodedCache.get(cacheKey);
+    const cachedDriveBuf = (typeof sgSourceManager.getDecodedCache === 'function')
+      ? sgSourceManager.getDecodedCache(cacheKey)
+      : sgSourceManager.driveDecodedCache.get(cacheKey);
     const sliceRec = (typeof sgSourceManager.getSliceRecord === 'function') ? sgSourceManager.getSliceRecord(sgSourceManager.selectedDriveTrackId) : null;
     const readyBuf = cachedDriveBuf || (sliceRec && sliceRec.audioBuffer);
     if (!cachedDriveBuf) {
       const track = sgSourceManager.getSelectedDriveTrack();
       if (track) {
+        const alreadyLoadingSame = (
+          appState._loadingDriveTrackId === sgSourceManager.selectedDriveTrackId &&
+          Boolean(appState._loadingDrivePromise)
+        );
+        if (alreadyLoadingSame) {
+          appState._loadingDriveShouldPlay = true;
+          if (readyBuf) {
+            startDecodedActiveBufferPlayback(readyBuf, false, true);
+          } else {
+            appState.isPlaying = true;
+            const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+            showTransportNotice(`Loading "${cleanName}" (${appState._driveLoadPercent || 0}%)...`, false);
+            updateTransportPlayUI();
+          }
+          return;
+        }
         if (readyBuf) {
           // Play pre-decoded initial slice immediately in the gesture tick (< 1ms)!
           startDecodedActiveBufferPlayback(readyBuf, false, true);
@@ -10886,44 +10914,49 @@ function updateWaveformLoopUI() {
   const hEnd = document.getElementById('wf-handle-end');
   if (!wfBox || !hStart || !hEnd) return;
 
+  let _dragStartX = 0;
+  let _dragMoved = false;
+
+  function seekWaveformAtClientX(clientX) {
+    const rect = wfBox.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    const buf = sgSourceManager.getActiveBuffer();
+    const isDriveTrack = sgSourceManager.sourceMode === 'studio' && Boolean(sgSourceManager.selectedDriveTrackId);
+    const driveWf = isDriveTrack ? sgSourceManager.getSelectedDriveWaveformMeta() : null;
+    const dur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : (buf ? buf.duration : 4.0);
+    const clampedRatio = Math.max(appState.loopStartRatio, Math.min(appState.loopEndRatio - 0.002, ratio));
+    appState.playbackOffsetSec = clampedRatio * dur;
+    if (appState.isPlaying) {
+      startAudioPlayback();
+    } else {
+      updatePlayheadUI(appState.playbackOffsetSec, dur);
+    }
+  }
+
   hStart.addEventListener('pointerdown', (e) => {
     e.stopPropagation();
     appState.draggingHandle = 'start';
-    wfBox.setPointerCapture(e.pointerId);
+    _dragStartX = e.clientX;
+    _dragMoved = false;
+    try { wfBox.setPointerCapture(e.pointerId); } catch (err) {}
   });
 
   hEnd.addEventListener('pointerdown', (e) => {
     e.stopPropagation();
     appState.draggingHandle = 'end';
-    wfBox.setPointerCapture(e.pointerId);
+    _dragStartX = e.clientX;
+    _dragMoved = false;
+    try { wfBox.setPointerCapture(e.pointerId); } catch (err) {}
   });
 
   wfBox.addEventListener('pointerdown', (e) => {
-    const rect = wfBox.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
-    if (Math.abs(ratio - appState.loopStartRatio) < 0.035) {
-      appState.draggingHandle = 'start';
-      wfBox.setPointerCapture(e.pointerId);
-    } else if (Math.abs(ratio - appState.loopEndRatio) < 0.035) {
-      appState.draggingHandle = 'end';
-      wfBox.setPointerCapture(e.pointerId);
-    } else {
-      const buf = sgSourceManager.getActiveBuffer();
-      const isDriveTrack = sgSourceManager.sourceMode === 'studio' && Boolean(sgSourceManager.selectedDriveTrackId);
-      const driveWf = isDriveTrack ? sgSourceManager.getSelectedDriveWaveformMeta() : null;
-      const dur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : (buf ? buf.duration : 4.0);
-      const clampedRatio = Math.max(appState.loopStartRatio, Math.min(appState.loopEndRatio - 0.01, ratio));
-      appState.playbackOffsetSec = clampedRatio * dur;
-      if (appState.isPlaying) {
-        startAudioPlayback();
-      } else {
-        updatePlayheadUI(appState.playbackOffsetSec, dur);
-      }
-    }
+    seekWaveformAtClientX(e.clientX);
   });
 
   wfBox.addEventListener('pointermove', (e) => {
     if (!appState.draggingHandle) return;
+    if (!_dragMoved && Math.abs(e.clientX - _dragStartX) < 5) return;
+    _dragMoved = true;
     const rect = wfBox.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
     if (appState.draggingHandle === 'start') {
@@ -10937,8 +10970,14 @@ function updateWaveformLoopUI() {
 
   const releaseDrag = (e) => {
     if (appState.draggingHandle) {
+      const wasMoved = _dragMoved;
+      const evtType = e && e.type;
       appState.draggingHandle = null;
+      _dragMoved = false;
       try { wfBox.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (!wasMoved && evtType === 'pointerup') {
+        seekWaveformAtClientX(e.clientX);
+      }
     }
   };
   wfBox.addEventListener('pointerup', releaseDrag);
