@@ -2027,7 +2027,9 @@ class EarlisthenicSourceManager {
     this.drivePreviewCache = new Map(); // `${fileId}@${sampleRate}` -> partial prefix AudioBuffer while streaming
     this.driveWaveformCache = new Map(); // fileId -> { updatedAt, durationSec, bins, mins, maxs, rms }
     this.driveSliceCache = new Map(); // fileId -> { arrayBuffer, audioBuffer }
+    this.driveHeaderCache = new Map(); // fileId -> parsed FLAC STREAMINFO header + minimalHeader42
     this._activeAbortControllers = new Map(); // fileId -> AbortController
+    this._activeSeekAbortCtrl = null;
 
     // Local file state
     this.customAudioBuffer = null;
@@ -2134,6 +2136,172 @@ class EarlisthenicSourceManager {
     if (!fn) return null;
     const r2Base = (typeof window !== 'undefined' && window.EARLISTHENIC_R2_BASE) ? window.EARLISTHENIC_R2_BASE : 'https://media.earlisthenic.com';
     return r2Base + '/' + fn;
+  }
+
+  static getKnownTrackBytes(track) {
+    if (!track) return 0;
+    const KNOWN_TRACK_SIZES = {
+      '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
+      '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
+      '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
+      '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
+      '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
+      '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
+      '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
+      '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
+      '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
+    };
+    return (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || Number(track.sizeBytes) || 0;
+  }
+
+  static getCandidateCdnUrls(track) {
+    if (!track) return [];
+    return [
+      track.r2Url || EarlisthenicSourceManager.getTrackR2Url(track),
+      track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
+      track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
+    ]
+      .filter(Boolean)
+      .map(u => u
+        .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
+        .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac'));
+  }
+
+  static _getFlacCrc8Table() {
+    if (!EarlisthenicSourceManager._crc8Table) {
+      const tbl = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let b = 0; b < 8; b++) c = (c & 0x80) ? ((c << 1) ^ 0x07) : (c << 1);
+        tbl[i] = c & 0xFF;
+      }
+      EarlisthenicSourceManager._crc8Table = tbl;
+    }
+    return EarlisthenicSourceManager._crc8Table;
+  }
+
+  static _flacCrc8(u8, start, endExclusive) {
+    const tbl = EarlisthenicSourceManager._getFlacCrc8Table();
+    let crc = 0;
+    for (let i = start; i < endExclusive; i++) crc = tbl[crc ^ u8[i]];
+    return crc;
+  }
+
+  static _readFlacUtf8Number(u8, pos) {
+    if (pos >= u8.length) return null;
+    const b0 = u8[pos];
+    if (b0 < 0x80) return { val: b0, len: 1 };
+    let len = 0;
+    if ((b0 & 0xE0) === 0xC0) len = 2;
+    else if ((b0 & 0xF0) === 0xE0) len = 3;
+    else if ((b0 & 0xF8) === 0xF0) len = 4;
+    else if ((b0 & 0xFC) === 0xF8) len = 5;
+    else if ((b0 & 0xFE) === 0xFC) len = 6;
+    else if (b0 === 0xFE) len = 7;
+    else return null;
+    if (pos + len > u8.length) return null;
+    let val = b0 & ((1 << (7 - len)) - 1);
+    for (let i = 1; i < len; i++) {
+      if ((u8[pos + i] & 0xC0) !== 0x80) return null;
+      val = (val * 64) + (u8[pos + i] & 0x3F);
+    }
+    return { val, len };
+  }
+
+  /**
+   * Parses FLAC fLaC metadata blocks to extract STREAMINFO & build a 42-byte minimal header
+   * (with total_samples = 0 and MD5 = 0) so mid-song byte ranges decode cleanly via Web Audio.
+   */
+  static parseFlacStreamInfo(arrayBuffer) {
+    if (!EarlisthenicSourceManager.isFlacBuffer(arrayBuffer)) return null;
+    const u8 = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+    if (u8.length < 42) return null;
+    let off = 4;
+    let streamInfo = null;
+    let isLast = false;
+    while (off + 4 <= u8.length && !isLast) {
+      const h = u8[off];
+      isLast = (h & 0x80) !== 0;
+      const type = h & 0x7F;
+      const len = (u8[off + 1] << 16) | (u8[off + 2] << 8) | u8[off + 3];
+      if (off + 4 + len > u8.length) break;
+      if (type === 0 && len >= 34) {
+        const b = u8.subarray(off + 4, off + 4 + 34);
+        const minBlock = (b[0] << 8) | b[1];
+        const maxBlock = (b[2] << 8) | b[3];
+        const sr = (b[10] << 12) | (b[11] << 4) | (b[12] >> 4);
+        const ch = ((b[12] >> 1) & 0x07) + 1;
+        const bps = (((b[12] & 0x01) << 4) | (b[13] >> 4)) + 1;
+        const totalSamples = ((b[13] & 0x0F) * 4294967296) + (((b[14] << 24) >>> 0) | (b[15] << 16) | (b[16] << 8) | b[17]);
+        const minimalHeader42 = new Uint8Array(42);
+        minimalHeader42[0] = 0x66; minimalHeader42[1] = 0x4C; minimalHeader42[2] = 0x61; minimalHeader42[3] = 0x43; // fLaC
+        minimalHeader42[4] = 0x80; minimalHeader42[5] = 0x00; minimalHeader42[6] = 0x00; minimalHeader42[7] = 0x22; // LAST + STREAMINFO (34)
+        minimalHeader42.set(b, 8);
+        minimalHeader42[8 + 13] = minimalHeader42[8 + 13] & 0xF0;
+        for (let z = 8 + 14; z < 42; z++) minimalHeader42[z] = 0;
+        streamInfo = {
+          minBlock,
+          maxBlock,
+          sampleRate: sr,
+          channels: ch,
+          bitDepth: bps,
+          totalSamples,
+          durationSec: sr > 0 ? (totalSamples / sr) : 0,
+          minimalHeader42
+        };
+      }
+      off += 4 + len;
+    }
+    if (!streamInfo) return null;
+    streamInfo.dataOffset = off;
+    return streamInfo;
+  }
+
+  /**
+   * Scans an arbitrary mid-file byte buffer for the first CRC-8 verified FLAC audio frame boundary.
+   */
+  static findFirstValidFlacFrame(u8, streamInfo) {
+    if (!u8 || !streamInfo || !streamInfo.sampleRate) return null;
+    const maxScan = Math.min(u8.length - 16, 131072);
+    for (let i = 0; i < maxScan; i++) {
+      if (u8[i] !== 0xFF || (u8[i + 1] & 0xFE) !== 0xF8) continue;
+      const blockingStrategy = u8[i + 1] & 0x01;
+      const bsCode = (u8[i + 2] >> 4) & 0x0F;
+      const srCode = u8[i + 2] & 0x0F;
+      const chCode = (u8[i + 3] >> 4) & 0x0F;
+      const ssCode = (u8[i + 3] >> 1) & 0x07;
+      const reserved = u8[i + 3] & 0x01;
+      if (bsCode === 0 || srCode === 0x0F || chCode > 10 || ssCode === 3 || ssCode === 7 || reserved !== 0) continue;
+      const num = EarlisthenicSourceManager._readFlacUtf8Number(u8, i + 4);
+      if (!num) continue;
+      let p = i + 4 + num.len;
+      if (bsCode === 6) p += 1;
+      else if (bsCode === 7) p += 2;
+      if (srCode === 12) p += 1;
+      else if (srCode === 13 || srCode === 14) p += 2;
+      if (p >= u8.length) continue;
+      if (u8[p] !== EarlisthenicSourceManager._flacCrc8(u8, i, p)) continue;
+      const exactSample = blockingStrategy === 0 ? (num.val * streamInfo.minBlock) : num.val;
+      const exactSec = exactSample / streamInfo.sampleRate;
+      const maxDur = streamInfo.durationSec > 0 ? (streamInfo.durationSec + 1) : 86400;
+      if (exactSec < 0 || exactSec > maxDur) continue;
+      return { frameOffset: i, exactSample, exactSec };
+    }
+    return null;
+  }
+
+  /**
+   * Prepends minimal 42-byte fLaC STREAMINFO onto a frame-aligned mid-song byte range slice.
+   */
+  static spliceFlacSeekSlice(streamInfo, rawRangeU8) {
+    const frame = EarlisthenicSourceManager.findFirstValidFlacFrame(rawRangeU8, streamInfo);
+    if (!frame) return null;
+    const payloadLen = rawRangeU8.length - frame.frameOffset;
+    if (payloadLen <= 256) return null;
+    const spliced = new Uint8Array(42 + payloadLen);
+    spliced.set(streamInfo.minimalHeader42, 0);
+    spliced.set(rawRangeU8.subarray(frame.frameOffset), 42);
+    return { arrayBuffer: spliced.buffer, exactStartSec: frame.exactSec };
   }
 
   setDriveTracks(tracks) {
@@ -2490,6 +2658,10 @@ class EarlisthenicSourceManager {
       arrayBuffer: arrayBuffer || existing.arrayBuffer,
       audioBuffer: audioBuffer !== null ? audioBuffer : existing.audioBuffer
     });
+    if (arrayBuffer && this.driveHeaderCache && !this.driveHeaderCache.has(fileId)) {
+      const parsedHdr = EarlisthenicSourceManager.parseFlacStreamInfo(arrayBuffer);
+      if (parsedHdr) this.driveHeaderCache.set(fileId, parsedHdr);
+    }
 
     const maxDecodedSlices = this._isConstrainedMemoryDevice() ? 2 : 3;
     const decodedKeys = [];
@@ -2523,23 +2695,120 @@ class EarlisthenicSourceManager {
     });
   }
 
+  abortActiveSeekSlice() {
+    if (this._activeSeekAbortCtrl) {
+      try { this._activeSeekAbortCtrl.abort(); } catch (e) {}
+      this._activeSeekAbortCtrl = null;
+    }
+  }
+
+  /**
+   * Fetches and decodes a frame-aligned 3 MB FLAC slice at an arbitrary timeline ratio (0..0.985),
+   * enabling instant random-access seeking before the full 50-75 MB master finishes downloading.
+   */
+  async fetchTrackSeekSlice(track, targetRatio, sliceBytes = 3145728) {
+    if (!track || !track.fileId || typeof fetch !== 'function') return null;
+    this.abortActiveSeekSlice();
+    const abortCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    this._activeSeekAbortCtrl = abortCtrl;
+    const isAborted = () => Boolean(abortCtrl && abortCtrl.signal.aborted);
+
+    const cdnUrls = EarlisthenicSourceManager.getCandidateCdnUrls(track);
+    if (cdnUrls.length === 0) return null;
+
+    let totalBytes = EarlisthenicSourceManager.getKnownTrackBytes(track);
+    let streamInfo = this.driveHeaderCache ? this.driveHeaderCache.get(track.fileId) : null;
+    if (!streamInfo) {
+      const sliceRec = this.getSliceRecord(track.fileId);
+      if (sliceRec && sliceRec.arrayBuffer) {
+        streamInfo = EarlisthenicSourceManager.parseFlacStreamInfo(sliceRec.arrayBuffer);
+        if (streamInfo && this.driveHeaderCache) this.driveHeaderCache.set(track.fileId, streamInfo);
+      }
+    }
+
+    const ratio = Math.max(0, Math.min(0.985, Number(targetRatio) || 0));
+
+    for (let ci = 0; ci < cdnUrls.length; ci++) {
+      if (isAborted()) return null;
+      const url = cdnUrls[ci];
+      try {
+        if (!totalBytes) {
+          const headRes = await fetch(url, abortCtrl ? { method: 'HEAD', signal: abortCtrl.signal } : { method: 'HEAD' });
+          if (headRes && headRes.ok) {
+            const cl = Number(headRes.headers.get('content-length'));
+            if (cl > 0) totalBytes = cl;
+          }
+        }
+        if (!totalBytes || totalBytes < 65536 || isAborted()) continue;
+
+        if (!streamInfo && ratio > 0.01) {
+          const hdrRes = await fetch(url, {
+            headers: { 'Range': 'bytes=0-16383' },
+            signal: abortCtrl ? abortCtrl.signal : undefined
+          });
+          if (!hdrRes || (hdrRes.status !== 206 && hdrRes.status !== 200)) continue;
+          const hdrAb = await hdrRes.arrayBuffer();
+          streamInfo = EarlisthenicSourceManager.parseFlacStreamInfo(hdrAb);
+          if (streamInfo && this.driveHeaderCache) this.driveHeaderCache.set(track.fileId, streamInfo);
+        }
+        if (isAborted()) return null;
+
+        if (ratio <= 0.01) {
+          const endByte = Math.min(totalBytes - 1, sliceBytes - 1);
+          const res = await fetch(url, {
+            headers: { 'Range': `bytes=0-${endByte}` },
+            signal: abortCtrl ? abortCtrl.signal : undefined
+          });
+          if (!res || (res.status !== 206 && res.status !== 200)) continue;
+          let cleanAb = await res.arrayBuffer();
+          if (EarlisthenicSourceManager.isFlacBuffer(cleanAb)) {
+            cleanAb = EarlisthenicSourceManager.sanitizeFlacMetadata(cleanAb);
+          }
+          if (isAborted()) return null;
+          const decoded = (typeof this.engine.safeDecodeAudioData === 'function')
+            ? await this.engine.safeDecodeAudioData(cleanAb, isAborted)
+            : await this.engine.ensureContext().decodeAudioData(cleanAb.slice(0));
+          return decoded ? { audioBuffer: decoded, startOffsetSec: 0 } : null;
+        }
+
+        if (!streamInfo) return null; // Non-FLAC fallback handled by full buffer download
+        const dataSpan = Math.max(65536, totalBytes - streamInfo.dataOffset);
+        const targetByte = Math.max(
+          streamInfo.dataOffset,
+          Math.min(totalBytes - 65536, streamInfo.dataOffset + Math.floor(dataSpan * ratio))
+        );
+        const endByte = Math.min(totalBytes - 1, targetByte + sliceBytes - 1);
+        const res = await fetch(url, {
+          headers: { 'Range': `bytes=${targetByte}-${endByte}` },
+          signal: abortCtrl ? abortCtrl.signal : undefined
+        });
+        if (!res || res.status !== 206 || isAborted()) continue;
+        const ab = await res.arrayBuffer();
+        if (isAborted()) return null;
+        const spliced = EarlisthenicSourceManager.spliceFlacSeekSlice(streamInfo, new Uint8Array(ab));
+        if (!spliced) continue;
+        const decoded = (typeof this.engine.safeDecodeAudioData === 'function')
+          ? await this.engine.safeDecodeAudioData(spliced.arrayBuffer, isAborted)
+          : await this.engine.ensureContext().decodeAudioData(spliced.arrayBuffer.slice(0));
+        if (!decoded || isAborted()) return null;
+        return { audioBuffer: decoded, startOffsetSec: spliced.exactStartSec };
+      } catch (e) {
+        if (isAborted() || (e && (e.isAborted || e.name === 'AbortError'))) return null;
+      }
+    }
+    return null;
+  }
+
   async fetchTrackSlice(track, sliceBytes = 3670016) {
     if (!track || !track.fileId) return null;
     const existing = this.getSliceRecord(track.fileId);
     if (existing && existing.arrayBuffer) return existing;
 
-    const cdnUrls = [
-      track.r2Url || EarlisthenicSourceManager.getTrackR2Url(track),
-      track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
-      track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
-    ].filter(Boolean);
+    const cdnUrls = EarlisthenicSourceManager.getCandidateCdnUrls(track);
 
     for (let ci = 0; ci < cdnUrls.length; ci++) {
-      let url = cdnUrls[ci];
+      const url = cdnUrls[ci];
       if (!url) continue;
-      url = url
-        .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
-        .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
 
       try {
         const rangeHeader = `bytes=0-${sliceBytes - 1}`;
@@ -2634,30 +2903,11 @@ class EarlisthenicSourceManager {
 
     try {
       // Option B Upgrade: Direct Edge CDN High-Speed Streaming (Fastly CDN with HTTP Range & CORS)
-      const cdnUrls = [
-        track.r2Url || EarlisthenicSourceManager.getTrackR2Url(track),
-        track.cdnUrl || EarlisthenicSourceManager.getTrackCdnUrl(track),
-        track.fallbackCdnUrl || EarlisthenicSourceManager.getTrackFallbackCdnUrl(track)
-      ].filter(Boolean);
-
-      const KNOWN_TRACK_SIZES = {
-        '1pb2zVIJ0jolHMItX5WPzncWWTgsuaJK8': 32537782,
-        '1C-rs0DpkjHt7wqmcSTTeOBIKkRSuB-Cb': 46337201,
-        '1CYzTb5YO9pdgjIuvu0LDbnBTt73QoCGS': 56377608,
-        '1wRjw8JnbYhslu4to8AxdQ4xW7CAS36Du': 50562654,
-        '15D1oEY26FSQyFY3G7NUzeITp3z53mr94': 58506448,
-        '1WQwqRzg-J63tL1WkBf23x1XedTlV32vf': 69572263,
-        '1L9o0yWQe7DsH1OnJJd4muoUQbuGZOtHq': 56077953,
-        '1MEv4rYdlUgELgLW1x-b8B-muvrzqKzMB': 74348212,
-        '1bscec-Zh2gft52WsCVobyXzhVAMXhSIL': 53091872
-      };
+      const cdnUrls = EarlisthenicSourceManager.getCandidateCdnUrls(track);
 
       for (let ci = 0; ci < cdnUrls.length; ci++) {
-        let url = cdnUrls[ci];
+        const url = cdnUrls[ci];
         if (!url) continue;
-        url = url
-          .replace('Khong_dau_Nua_Roi.flac', 'Khong_Dau_Nua_Roi.flac')
-          .replace('Troi_Giau_Troi_Mang_di.flac', 'Troi_Giau_Troi_Mang_Di.flac');
 
         try {
           if (typeof fetch !== 'function') break;
@@ -2667,7 +2917,7 @@ class EarlisthenicSourceManager {
             throw abortedErr;
           }
 
-          let totalBytes = (track.fileId && KNOWN_TRACK_SIZES[track.fileId]) || Number(track.sizeBytes) || 0;
+          let totalBytes = EarlisthenicSourceManager.getKnownTrackBytes(track);
           let supportsRange = true;
 
           // OPTIMIZATION: If size is already known from KNOWN_TRACK_SIZES, SKIP blocking HEAD request!
@@ -6801,6 +7051,9 @@ const appState = {
   isPlaying: false,
   isBufferingPartial: false,
   _partialSliceEndedOffsetSec: 0,
+  _activePartialBaseSec: 0,
+  _seekRequestToken: 0,
+  _activeSeekSlice: null,
   loopStartRatio: 0.0,
   loopEndRatio: 1.0,
   draggingHandle: null,
@@ -8869,6 +9122,11 @@ function switchAudioSourceMode(mode) {
   sgSourceManager.sourceMode = targetMode;
   appState.isBufferingPartial = false;
   appState._partialSliceEndedOffsetSec = 0;
+  appState._activePartialBaseSec = 0;
+  appState._activeSeekSlice = null;
+  if (sgSourceManager && typeof sgSourceManager.abortActiveSeekSlice === 'function') {
+    sgSourceManager.abortActiveSeekSlice();
+  }
   appState.playbackOffsetSec = 0;
 
   if (targetMode === 'studio') {
@@ -9574,13 +9832,16 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         }
       }
       if (sliceAudioBuf && loadToken === appState._driveTrackLoadToken) {
-        initialSlicePlayed = true;
-        appState.isPlaying = true;
-        const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-        showTransportNotice(`Playing: "${cleanName}"`, false);
-        setTimeout(hideTransportNotice, 2000);
-        startDecodedActiveBufferPlayback(sliceAudioBuf, false, true);
-        updateTransportPlayUI();
+        const userSeekedBeyondChunk0 = appState.playbackOffsetSec >= (sliceAudioBuf.duration - 0.25);
+        if (!userSeekedBeyondChunk0 && (!appState._activeSeekSlice || appState._activeSeekSlice.fileId !== track.fileId)) {
+          initialSlicePlayed = true;
+          appState.isPlaying = true;
+          const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+          showTransportNotice(`Playing: "${cleanName}"`, false);
+          setTimeout(hideTransportNotice, 2000);
+          startDecodedActiveBufferPlayback(sliceAudioBuf, false, true, 0);
+          updateTransportPlayUI();
+        }
       }
     } catch (sliceErr) {}
   }
@@ -9643,12 +9904,15 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
           const playNow = Boolean(appState._loadingDriveShouldPlay || shouldPlay);
           const wasPlaying = Boolean(appState.isPlaying || (sgAudioEngine && (sgAudioEngine.activeBufferSource || sgAudioEngine.activeSourceGain)));
           if (playNow || wasPlaying) {
-            initialSlicePlayed = true;
-            const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-            showTransportNotice(`Playing: "${cleanName}"`, false);
-            setTimeout(hideTransportNotice, 2000);
-            startDecodedActiveBufferPlayback(initialDecodedSlice, false, true);
-            updateTransportPlayUI();
+            const userSeekedBeyondChunk0 = appState.playbackOffsetSec >= (initialDecodedSlice.duration - 0.25);
+            if (!userSeekedBeyondChunk0 && (!appState._activeSeekSlice || appState._activeSeekSlice.fileId !== track.fileId)) {
+              initialSlicePlayed = true;
+              const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+              showTransportNotice(`Playing: "${cleanName}"`, false);
+              setTimeout(hideTransportNotice, 2000);
+              startDecodedActiveBufferPlayback(initialDecodedSlice, false, true, 0);
+              updateTransportPlayUI();
+            }
           }
         }
       );
@@ -9663,7 +9927,7 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
       appState._driveLoadPercent = 0;
       updateWaveformLoopUI();
       drawGlobalWaveform();
-      if (initialSlicePlayed && appState.isPlaying) {
+      if (appState.isPlaying) {
         if (appState.isBufferingPartial) {
           appState.isBufferingPartial = false;
           hideTransportNotice();
@@ -9675,17 +9939,17 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
             : ((liveSliceRec && liveSliceRec.audioBuffer) ? liveSliceRec.audioBuffer.duration : appState.playbackOffsetSec);
           appState._partialSliceEndedOffsetSec = 0;
           appState.playbackOffsetSec = resumeOffset;
-          startDecodedActiveBufferPlayback(buf, false, false);
+          startDecodedActiveBufferPlayback(buf, false, false, 0);
         } else {
-          // Seamless hot-swap onto full master buffer at exact continuing offset!
+          // Seamless hot-swap onto full master buffer at exact continuing timeline offset!
           captureCurrentPlayheadOffsetSec();
-          startDecodedActiveBufferPlayback(buf, true, false);
+          startDecodedActiveBufferPlayback(buf, true, false, 0);
         }
       } else if (playNow || wasPlaying) {
         const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
         showTransportNotice(`Playing: "${cleanName}"`, false);
         setTimeout(hideTransportNotice, 2500);
-        startDecodedActiveBufferPlayback(buf, true, false);
+        startDecodedActiveBufferPlayback(buf, true, false, 0);
       } else {
         hideTransportNotice();
         updateTransportPlayUI();
@@ -9721,19 +9985,25 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
   return await loadPromise;
 }
 
-function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = false) {
+function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = false, bufferStartOffsetSec = 0) {
   if (!buf) return false;
   const isDriveTrack = sgSourceManager.sourceMode === 'studio' && Boolean(sgSourceManager.selectedDriveTrackId);
   const driveWf = isDriveTrack ? sgSourceManager.getSelectedDriveWaveformMeta() : null;
   const fullDur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : buf.duration;
+  const bufBaseSec = Math.max(0, Number(bufferStartOffsetSec) || 0);
 
-  // Determine if this buffer is an incomplete initial slice:
+  // Determine if this buffer is an incomplete initial or seek slice:
   const activeSr = (sgAudioEngine && sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || 48000;
   const isFullCached = isDriveTrack
     ? Boolean(sgSourceManager.driveDecodedCache.has(`${sgSourceManager.selectedDriveTrackId}@${activeSr}`))
     : false;
   const isStillStreamingSelected = isDriveTrack && appState._loadingDriveTrackId === sgSourceManager.selectedDriveTrackId && !isFullCached;
-  const isPartial = Boolean(isPartialSlice || isStillStreamingSelected || (isDriveTrack && fullDur > 0 && buf.duration < (fullDur - 1.5)));
+  const isPartial = Boolean(
+    isPartialSlice ||
+    bufBaseSec > 0 ||
+    isStillStreamingSelected ||
+    (isDriveTrack && fullDur > 0 && buf.duration < (fullDur - 1.5))
+  );
 
   const targetLoopStart = appState.loopStartRatio * fullDur;
   const targetLoopEnd = Math.max(targetLoopStart + 0.15, appState.loopEndRatio * fullDur);
@@ -9742,21 +10012,15 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = fals
     appState.playbackOffsetSec = targetLoopStart;
   }
 
-  const effectiveLoopStart = Math.min(targetLoopStart, Math.max(0, buf.duration - 0.2));
-  const effectiveLoopEnd = isPartial
-    ? buf.duration
-    : Math.max(effectiveLoopStart + 0.15, Math.min(buf.duration, targetLoopEnd));
-
-  // CRITICAL FIX: Partial slices MUST NEVER loop! Setting loop to true on a slice causes it
-  // to loop repeatedly like a broken record until the full song finishes downloading!
+  // CRITICAL FIX: Partial / seek slices MUST NEVER loop!
   const shouldLoop = !isPartial;
 
-  // If user seeked beyond what the partial slice currently holds, wait cleanly in buffering state
-  // at the requested target offset instead of truncating and playing a tiny 0.02s stub at the end of the slice.
-  if (isPartial && appState.playbackOffsetSec >= (buf.duration - 0.25)) {
+  // Check whether requested timeline position falls inside [bufBaseSec .. bufBaseSec + buf.duration)
+  if (isPartial && (appState.playbackOffsetSec < (bufBaseSec - 0.5) || appState.playbackOffsetSec >= (bufBaseSec + buf.duration - 0.25))) {
     appState.isPlaying = true;
     appState.isBufferingPartial = true;
     appState._partialSliceEndedOffsetSec = appState.playbackOffsetSec;
+    appState._activePartialBaseSec = bufBaseSec;
     sgAudioEngine.disconnectActiveSources();
     const trk = sgSourceManager.getSelectedDriveTrack();
     const cleanName = trk ? (sanitizeTrackDisplayName(trk.name) || trk.name) : 'FREE AUDIO';
@@ -9766,18 +10030,29 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = fals
     return true;
   }
 
+  const localOffset = isPartial
+    ? Math.max(0, Math.min(buf.duration - 0.05, appState.playbackOffsetSec - bufBaseSec))
+    : appState.playbackOffsetSec;
+  const effectiveLoopStart = isPartial
+    ? 0
+    : Math.min(targetLoopStart, Math.max(0, buf.duration - 0.2));
+  const effectiveLoopEnd = isPartial
+    ? buf.duration
+    : Math.max(effectiveLoopStart + 0.15, Math.min(buf.duration, targetLoopEnd));
+
   appState.isBufferingPartial = false;
   appState._partialSliceEndedOffsetSec = 0;
 
   const startInfo = (useHotSwap && typeof sgAudioEngine.hotSwapBufferLoop === 'function')
-    ? sgAudioEngine.hotSwapBufferLoop(buf, effectiveLoopStart, effectiveLoopEnd, appState.playbackOffsetSec, shouldLoop)
-    : sgAudioEngine.startBufferLoop(buf, effectiveLoopStart, effectiveLoopEnd, appState.playbackOffsetSec, shouldLoop);
+    ? sgAudioEngine.hotSwapBufferLoop(buf, effectiveLoopStart, effectiveLoopEnd, localOffset, shouldLoop)
+    : sgAudioEngine.startBufferLoop(buf, effectiveLoopStart, effectiveLoopEnd, localOffset, shouldLoop);
 
   if (startInfo) {
     const now = (sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.currentTime) || 0;
+    appState._activePartialBaseSec = isPartial ? bufBaseSec : 0;
     appState.playbackStartedAtCtxTime = startInfo.startedAtContextTime - (startInfo.offsetSec - startInfo.loopStartSec);
     appState.playbackAnchorCtxTime = now;
-    appState.playbackAnchorPosSec = startInfo.offsetSec;
+    appState.playbackAnchorPosSec = (isPartial ? bufBaseSec : 0) + startInfo.offsetSec;
     appState.playbackAnchorLoopStartSec = targetLoopStart;
     appState.playbackAnchorLoopEndSec = targetLoopEnd;
     appState.isPlaying = true;
@@ -9792,10 +10067,11 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = fals
 
 if (typeof sgAudioEngine !== 'undefined' && sgAudioEngine) {
   sgAudioEngine.onBufferEnded = (srcNode, endedBuf) => {
-    // If an incomplete initial slice reached its end while full master track is still downloading:
+    // If an incomplete initial or seek slice reached its end while full master track is still downloading:
     if (appState._loadingDriveTrackId && appState.isPlaying) {
       appState.isBufferingPartial = true;
-      const endedOffset = (endedBuf && endedBuf.duration) ? endedBuf.duration : (appState.playbackOffsetSec || 0);
+      const baseSec = appState._activePartialBaseSec || 0;
+      const endedOffset = (endedBuf && endedBuf.duration) ? (baseSec + endedBuf.duration) : (appState.playbackOffsetSec || 0);
       appState._partialSliceEndedOffsetSec = endedOffset;
       appState.playbackOffsetSec = endedOffset;
       const track = (typeof sgSourceManager !== 'undefined' && sgSourceManager.getSelectedDriveTrack)
@@ -9811,6 +10087,11 @@ function selectStudioLoop(loopKey) {
   markUserTrainingInteraction();
   appState.isBufferingPartial = false;
   appState._partialSliceEndedOffsetSec = 0;
+  appState._activePartialBaseSec = 0;
+  appState._activeSeekSlice = null;
+  if (sgSourceManager && typeof sgSourceManager.abortActiveSeekSlice === 'function') {
+    sgSourceManager.abortActiveSeekSlice();
+  }
   const key = String(loopKey || 'drums');
 
   if (key === 'action:open-local-file') {
@@ -10267,6 +10548,55 @@ function toggleAudioPlayback() {
   updateTransportPlayUI();
 }
 
+async function seekAndPlayDriveTrackAtOffset(track, targetRatio, targetSec) {
+  if (!track || !track.fileId || typeof sgSourceManager.fetchTrackSeekSlice !== 'function') return false;
+  const seekToken = ++appState._seekRequestToken;
+  const driveWf = sgSourceManager.getSelectedDriveWaveformMeta();
+  const dur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : 0;
+
+  appState.isPlaying = true;
+  appState.isBufferingPartial = true;
+  appState._partialSliceEndedOffsetSec = targetSec;
+  appState.playbackOffsetSec = targetSec;
+  if (dur > 0 && typeof updatePlayheadUI === 'function') {
+    updatePlayheadUI(targetSec, dur);
+  }
+  const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+  showTransportNotice(`Seeking "${cleanName}" (${formatTimeMMSS(targetSec)})...`, false);
+  ensureStudioAnimationLoopRunning();
+  updateTransportPlayUI();
+
+  try {
+    const seekRes = await sgSourceManager.fetchTrackSeekSlice(track, targetRatio);
+    if (seekToken !== appState._seekRequestToken) return false;
+    if (sgSourceManager.selectedDriveTrackId !== track.fileId || !appState.isPlaying) return false;
+
+    const sr = (sgAudioEngine && sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || 48000;
+    const fullBuf = (typeof sgSourceManager.getDecodedCache === 'function')
+      ? sgSourceManager.getDecodedCache(`${track.fileId}@${sr}`)
+      : sgSourceManager.driveDecodedCache.get(`${track.fileId}@${sr}`);
+    if (fullBuf) {
+      appState.playbackOffsetSec = targetSec;
+      hideTransportNotice();
+      return startDecodedActiveBufferPlayback(fullBuf, true, false, 0);
+    }
+
+    if (seekRes && seekRes.audioBuffer) {
+      appState._activeSeekSlice = {
+        fileId: track.fileId,
+        startOffsetSec: seekRes.startOffsetSec,
+        audioBuffer: seekRes.audioBuffer
+      };
+      const sliceEnd = seekRes.startOffsetSec + seekRes.audioBuffer.duration;
+      const clampedOffset = Math.max(seekRes.startOffsetSec, Math.min(sliceEnd - 0.25, targetSec));
+      appState.playbackOffsetSec = clampedOffset;
+      hideTransportNotice();
+      return startDecodedActiveBufferPlayback(seekRes.audioBuffer, true, true, seekRes.startOffsetSec);
+    }
+  } catch (e) {}
+  return false;
+}
+
 function startAudioPlayback() {
   // Synchronize source manager with select dropdown value
   const srcSel = document.getElementById('studio-source-select');
@@ -10315,23 +10645,48 @@ function startAudioPlayback() {
           appState._loadingDriveTrackId === sgSourceManager.selectedDriveTrackId &&
           Boolean(appState._loadingDrivePromise)
         );
-        if (alreadyLoadingSame) {
-          appState._loadingDriveShouldPlay = true;
-          if (readyBuf) {
-            startDecodedActiveBufferPlayback(readyBuf, false, true);
-          } else {
-            appState.isPlaying = true;
-            const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
-            showTransportNotice(`Loading "${cleanName}" (${appState._driveLoadPercent || 0}%)...`, false);
-            updateTransportPlayUI();
+        const targetSec = appState.playbackOffsetSec || 0;
+        const seekCache = appState._activeSeekSlice;
+        const seekCoversTarget = Boolean(
+          seekCache &&
+          seekCache.fileId === track.fileId &&
+          seekCache.audioBuffer &&
+          targetSec >= (seekCache.startOffsetSec - 0.5) &&
+          targetSec < (seekCache.startOffsetSec + seekCache.audioBuffer.duration - 0.25)
+        );
+        const chunk0CoversTarget = Boolean(
+          readyBuf &&
+          targetSec < (readyBuf.duration - 0.25)
+        );
+
+        if (seekCoversTarget) {
+          startDecodedActiveBufferPlayback(seekCache.audioBuffer, true, true, seekCache.startOffsetSec);
+          if (!alreadyLoadingSame) loadDriveTrackAndMaybePlay(track, true);
+          return;
+        }
+        if (chunk0CoversTarget) {
+          startDecodedActiveBufferPlayback(readyBuf, Boolean(sgAudioEngine.activeBufferSource), true, 0);
+          if (!alreadyLoadingSame) loadDriveTrackAndMaybePlay(track, true);
+          return;
+        }
+
+        const wfMeta = sgSourceManager.getSelectedDriveWaveformMeta();
+        const fullDur = (wfMeta && wfMeta.durationSec) ? wfMeta.durationSec : 0;
+        if (targetSec > 0.5 && fullDur > 0 && typeof sgSourceManager.fetchTrackSeekSlice === 'function') {
+          const targetRatio = Math.max(0, Math.min(0.985, targetSec / fullDur));
+          seekAndPlayDriveTrackAtOffset(track, targetRatio, targetSec);
+          if (!alreadyLoadingSame) {
+            loadDriveTrackAndMaybePlay(track, false);
           }
           return;
         }
-        if (readyBuf) {
-          // Play pre-decoded initial slice immediately in the gesture tick (< 1ms)!
-          startDecodedActiveBufferPlayback(readyBuf, false, true);
-          // Stream full master song in background and hot-swap seamlessly
-          loadDriveTrackAndMaybePlay(track, true);
+
+        if (alreadyLoadingSame) {
+          appState._loadingDriveShouldPlay = true;
+          appState.isPlaying = true;
+          const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
+          showTransportNotice(`Loading "${cleanName}" (${appState._driveLoadPercent || 0}%)...`, false);
+          updateTransportPlayUI();
           return;
         }
         const cleanName = sanitizeTrackDisplayName(track.name) || track.name || 'FREE AUDIO';
@@ -10349,6 +10704,10 @@ function startAudioPlayback() {
 }
 
 function stopAudioPlayback() {
+  appState._seekRequestToken++;
+  if (sgSourceManager && typeof sgSourceManager.abortActiveSeekSlice === 'function') {
+    sgSourceManager.abortActiveSeekSlice();
+  }
   if (appState._loadingDriveTrackId) {
     cancelPendingDriveTrackLoad();
   }
@@ -10357,6 +10716,7 @@ function stopAudioPlayback() {
   }
   appState.isBufferingPartial = false;
   appState._partialSliceEndedOffsetSec = 0;
+  appState._activePartialBaseSec = 0;
   sgAudioEngine.disconnectActiveSources();
   appState.isPlaying = false;
   updateTransportPlayUI();
@@ -10926,10 +11286,9 @@ function updateWaveformLoopUI() {
     const dur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : (buf ? buf.duration : 4.0);
     const clampedRatio = Math.max(appState.loopStartRatio, Math.min(appState.loopEndRatio - 0.002, ratio));
     appState.playbackOffsetSec = clampedRatio * dur;
+    updatePlayheadUI(appState.playbackOffsetSec, dur);
     if (appState.isPlaying) {
       startAudioPlayback();
-    } else {
-      updatePlayheadUI(appState.playbackOffsetSec, dur);
     }
   }
 

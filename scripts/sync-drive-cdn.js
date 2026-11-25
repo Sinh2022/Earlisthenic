@@ -11,7 +11,7 @@ const audioDir = path.resolve(__dirname, '../audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
 
 function resolveGasCatalogUrl() {
-  const fallbackBase = 'https://script.google.com/macros/s/AKfycbyedI5_Xg_is_9ap9K0GJVkwKhCygDCsOEu1VM35dthCvT5tKvLltF0xRpoDpt5hg9s/exec';
+  const fallbackBase = 'https://script.google.com/macros/s/AKfycbw0SvX7-njNLUQc7n3cnxQw-2XRa0oT0UfyCPM362jUfhKhDn1j6zEWcOZkkJ12ZfOO/exec';
   try {
     const indexPath = path.resolve(__dirname, '../index.html');
     if (fs.existsSync(indexPath)) {
