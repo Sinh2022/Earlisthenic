@@ -1,25 +1,25 @@
 /**
- * Earlisthenic Progressive Web App Service Worker
+ * Earlisthenic Progressive Web App Service Worker (v2.12.3)
  * 
  * Strategy:
- * - Cache-First for lossless audio master tracks (audio/*.flac)
- * - Stale-While-Revalidate for app code, styles, and catalogs
- * - Network-First for dynamic training sessions and profile sync
+ * - HTML Shell Navigation: Network-First (2.5s safety timeout, falls back to cache when offline)
+ *   Guarantees immediate delivery of new deployments without trapping mobile users on stale iframes.
+ * - Lossless Audio Masters (audio/*.flac): Cache-First
+ * - Edge Dist Scripts & Manifest: Stale-While-Revalidate
  */
 
-const CACHE_NAME_APP = 'earlisthenic-shell-v2.11.0';
+const CACHE_NAME_APP = 'earlisthenic-shell-v2.12.3';
 const CACHE_NAME_AUDIO = 'earlisthenic-audio-v1';
 
 const STATIC_ASSETS = [
   './',
   './index.html',
   './audio/earlisthenic-catalog.json',
-  './modules/audio/LoudnessMatcher.js',
-  './modules/visualizer/SpectrumVisualizer.js',
-  './modules/adaptive/JndEngine.js',
-  './modules/storage/R2StorageClient.js',
-  './modules/storage/SupabaseRepository.js',
+  './audio/earlisthenic-waveforms.json',
+  './dist/earlisthenic-core.js',
+  './dist/earlisthenic-fir-processor.js',
   './dist/earlisthenic-visualizer-worker.js',
+  './dist/earlisthenic-neural-worker.js',
   './modules/pwa/manifest.webmanifest'
 ];
 
@@ -49,7 +49,7 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // Audio files: Cache-First
+  // 1. Lossless Audio Files: Cache-First
   if (url.pathname.endsWith('.flac') || url.pathname.includes('/audio/')) {
     event.respondWith(
       caches.open(CACHE_NAME_AUDIO).then(async (cache) => {
@@ -69,7 +69,31 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // App shell & modules: Stale-While-Revalidate
+  // 2. HTML Navigation Shell: Network-First with 2.5s Timeout Fallback
+  if (req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html')) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(CACHE_NAME_APP);
+        try {
+          const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+          const timeoutId = controller ? setTimeout(() => controller.abort(), 2500) : null;
+          const fetchOpts = controller ? { signal: controller.signal } : {};
+          const networkRes = await fetch(req, fetchOpts);
+          if (timeoutId) clearTimeout(timeoutId);
+          if (networkRes && networkRes.ok) {
+            cache.put(req, networkRes.clone());
+            return networkRes;
+          }
+        } catch (e) {}
+        const cached = await cache.match(req);
+        if (cached) return cached;
+        return fetch(req);
+      })()
+    );
+    return;
+  }
+
+  // 3. App code, scripts & modules: Stale-While-Revalidate
   if (req.method === 'GET' && (url.origin === location.origin || url.hostname.includes('github.io'))) {
     event.respondWith(
       caches.open(CACHE_NAME_APP).then(async (cache) => {
@@ -86,6 +110,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Default: Network fetch
+  // 4. Default: Network fetch
   event.respondWith(fetch(req));
 });

@@ -1,10 +1,7 @@
 /**
- * build-bundle.js
- * Compiles and bundles client-side scripts into a unified, high-speed CDN distribution:
+ * build-bundle.js (Edge CDN distribution compiler)
+ * Compiles and bundles client-side scripts into:
  * `I:\My Drive\earlisthenic-gh-pages\dist\earlisthenic-core.js`
- *
- * This dramatically reduces the Google Apps Script Web App payload from 641 KB to ~172 KB,
- * cutting serial XHR chunks by 75% and reducing real-world loading times by up to 70%.
  */
 
 const fs = require('fs');
@@ -12,10 +9,20 @@ const path = require('path');
 const vm = require('vm');
 
 const rootDir = path.resolve(__dirname, '..');
-const ghPagesDist = path.resolve(rootDir, '../earlisthenic-gh-pages/dist');
+const sourceCandidates = [
+  rootDir,
+  path.resolve(rootDir, '../Earlisthenic')
+];
 
-if (!fs.existsSync(ghPagesDist)) {
-  fs.mkdirSync(ghPagesDist, { recursive: true });
+let sourceDir = sourceCandidates.find(dir => fs.existsSync(path.join(dir, 'AudioEngine.html')) && fs.existsSync(path.join(dir, 'Games.html')));
+if (!sourceDir) {
+  console.warn('⚠️ Source HTML partials not found in local workspace. Keeping existing compiled dist/earlisthenic-core.js.');
+  process.exit(0);
+}
+
+const outDir = path.join(rootDir, 'dist');
+if (!fs.existsSync(outDir)) {
+  fs.mkdirSync(outDir, { recursive: true });
 }
 
 const scriptOrder = [
@@ -27,10 +34,10 @@ const scriptOrder = [
   'ClientApp.html'
 ];
 
-let bundle = '/* Earlisthenic High-Performance Core Engine Bundle v2.10.18 */\n';
+let bundle = '/* Earlisthenic High-Performance Core Engine Bundle v2.12.3 */\n';
 
 for (const file of scriptOrder) {
-  const filePath = path.join(rootDir, file);
+  const filePath = path.join(sourceDir, file);
   if (!fs.existsSync(filePath)) {
     throw new Error(`Missing expected source file: ${filePath}`);
   }
@@ -43,8 +50,6 @@ for (const file of scriptOrder) {
   bundle += js + '\n';
 }
 
-
-
 // Verify bundle syntax
 try {
   new vm.Script(bundle, { filename: 'earlisthenic-core.js' });
@@ -54,6 +59,6 @@ try {
   process.exit(1);
 }
 
-const outPath = path.join(ghPagesDist, 'earlisthenic-core.js');
+const outPath = path.join(outDir, 'earlisthenic-core.js');
 fs.writeFileSync(outPath, bundle, 'utf8');
 console.log(`✓ Built bundle: ${outPath} (${(bundle.length / 1024).toFixed(1)} KB)`);

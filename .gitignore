@@ -1,0 +1,14 @@
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+*.log
+.vscode/
+.idea/
+
+# Dependencies & Build Scratch
+node_modules/
+scratch/
+.clasp.json
+.clasprc.json

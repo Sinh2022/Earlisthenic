@@ -1,0 +1,24 @@
+{
+  "name": "earlisthenic-gh-pages",
+  "version": "2.12.3",
+  "description": "Earlisthenic Edge CDN & Progressive Web App distribution for Fastly & GitHub Pages",
+  "main": "index.html",
+  "scripts": {
+    "build": "node scripts/build-bundle.js",
+    "sync-audio": "node scripts/sync-free-audio.js"
+  },
+  "keywords": [
+    "earlisthenic",
+    "web-audio",
+    "linear-phase",
+    "flac",
+    "pwa",
+    "edge-cdn"
+  ],
+  "author": "Sinh2022",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sinh2022/Earlisthenic.git"
+  }
+}
