@@ -1,5 +1,5 @@
 /**
- * Earlisthenic Progressive Web App Service Worker (v2.12.4)
+ * Earlisthenic Progressive Web App Service Worker (v2.12.5)
  * 
  * Strategy:
  * - HTML Shell Navigation: Network-First (2.5s safety timeout, falls back to cache when offline)
@@ -8,7 +8,7 @@
  * - Edge Dist Scripts & Manifest: Stale-While-Revalidate
  */
 
-const CACHE_NAME_APP = 'earlisthenic-shell-v2.12.4';
+const CACHE_NAME_APP = 'earlisthenic-shell-v2.12.5';
 const CACHE_NAME_AUDIO = 'earlisthenic-audio-v1';
 
 const STATIC_ASSETS = [
@@ -16,7 +16,6 @@ const STATIC_ASSETS = [
   './index.html',
   './audio/earlisthenic-catalog.json',
   './audio/earlisthenic-waveforms.json',
-  './dist/earlisthenic-core.js',
   './dist/earlisthenic-fir-processor.js',
   './dist/earlisthenic-visualizer-worker.js',
   './dist/earlisthenic-neural-worker.js',
