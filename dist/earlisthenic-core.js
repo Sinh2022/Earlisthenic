@@ -1,4 +1,4 @@
-/* Earlisthenic High-Performance Core Engine Bundle v2.12.3 */
+/* Earlisthenic High-Performance Core Engine Bundle v2.10.18 */
 
 /* ==================== [MODULE: AudioEngine.html] ==================== */
 
@@ -656,7 +656,7 @@ class EarlisthenicAudioEngine {
     src.start(0, offset);
 
     src.onended = () => {
-      if (typeof this.onBufferEnded === 'function') {
+      if (this.activeBufferSource === src && typeof this.onBufferEnded === 'function') {
         try { this.onBufferEnded(src, audioBuffer); } catch (e) {}
       }
     };
@@ -816,7 +816,7 @@ class EarlisthenicAudioEngine {
     src.start(0, offset);
 
     src.onended = () => {
-      if (typeof this.onBufferEnded === 'function') {
+      if (this.activeBufferSource === src && typeof this.onBufferEnded === 'function') {
         try { this.onBufferEnded(src, audioBuffer); } catch (e) {}
       }
     };
@@ -847,7 +847,7 @@ class EarlisthenicAudioEngine {
    * cleanly resetting scheduled boundary fade ramps to match newly dragged bounds.
    */
   updateActiveLoopBounds(loopStartSec, loopEndSec, currentPosSec) {
-    if (this.activeBufferSource && this.activeBufferSource.buffer) {
+    if (this.activeBufferSource && this.activeBufferSource.buffer && this.activeBufferSource.loop) {
       const dur = this.activeBufferSource.buffer.duration;
       const s = Math.max(0, Math.min(dur - 0.1, loopStartSec));
       const e = Math.max(s + 0.1, Math.min(dur, loopEndSec));
@@ -2666,85 +2666,96 @@ class EarlisthenicSourceManager {
               throw new Error(`Received 0 bytes for fast-start chunk 0`);
             }
 
-            assembled.set(chunk0U8, 0);
-            loaded += chunk0U8.length;
+            // If server ignored Range and returned the full 200 OK body, adopt it directly
+            if (chunk0Res.status === 200 && chunk0U8.length >= totalBytes) {
+              assembledBuf = chunk0U8.slice(0, totalBytes).buffer;
+              if (onProgress) onProgress(totalBytes, totalBytes, track);
+            } else {
+              const firstCopyLen = Math.min(chunk0U8.length, totalBytes);
+              assembled.set(chunk0U8.subarray(0, firstCopyLen), 0);
+              loaded += firstCopyLen;
 
-            // FAST-START HOOK: Fire onInitialSliceReady callback IMMEDIATELY when chunk 0 arrives!
-            const sliceBuf = chunk0U8.slice(0).buffer;
-            let cleanSlice = sliceBuf;
-            if (EarlisthenicSourceManager.isFlacBuffer(cleanSlice)) {
-              cleanSlice = EarlisthenicSourceManager.sanitizeFlacMetadata(cleanSlice);
-            }
-            this.setSliceRecord(track.fileId, cleanSlice);
-            this._idbPutSlice(track.fileId, cleanSlice).catch(() => {});
-            if (typeof onInitialSliceReady === 'function') {
-              try {
-                onInitialSliceReady(cleanSlice);
-              } catch (e) {}
-            }
-            if (onProgress) {
-              onProgress(loaded, totalBytes, track);
-            }
+              // FAST-START HOOK: Fire onInitialSliceReady callback IMMEDIATELY when chunk 0 arrives!
+              const sliceBuf = chunk0U8.slice(0).buffer;
+              let cleanSlice = sliceBuf;
+              if (EarlisthenicSourceManager.isFlacBuffer(cleanSlice)) {
+                cleanSlice = EarlisthenicSourceManager.sanitizeFlacMetadata(cleanSlice);
+              }
+              this.setSliceRecord(track.fileId, cleanSlice);
+              this._idbPutSlice(track.fileId, cleanSlice).catch(() => {});
+              if (typeof onInitialSliceReady === 'function') {
+                try {
+                  onInitialSliceReady(cleanSlice);
+                } catch (e) {}
+              }
+              if (onProgress) {
+                onProgress(Math.min(loaded, totalBytes), totalBytes, track);
+              }
 
-            // 2. Fetch remaining chunks with parallel concurrency (concurrency = 3)
-            const remainingRanges = [];
-            let remOffset = chunk0U8.length;
-            while (remOffset < totalBytes) {
-              const remEnd = Math.min(remOffset + CHUNK_SIZE - 1, totalBytes - 1);
-              remainingRanges.push({ offset: remOffset, end: remEnd, rangeHeader: `bytes=${remOffset}-${remEnd}` });
-              remOffset += (remEnd - remOffset + 1);
-            }
+              // 2. Fetch remaining chunks with parallel concurrency (concurrency = 3)
+              const remainingRanges = [];
+              let remOffset = firstCopyLen;
+              while (remOffset < totalBytes) {
+                const remEnd = Math.min(remOffset + CHUNK_SIZE - 1, totalBytes - 1);
+                remainingRanges.push({ offset: remOffset, end: remEnd, rangeHeader: `bytes=${remOffset}-${remEnd}` });
+                remOffset += (remEnd - remOffset + 1);
+              }
 
-            let nextRangeIdx = 0;
-            const parallelWorker = async () => {
-              while (nextRangeIdx < remainingRanges.length) {
-                if (isAborted()) break;
-                const target = remainingRanges[nextRangeIdx++];
-                let chunkRes = null;
-                for (let attempt = 1; attempt <= 3; attempt++) {
+              let nextRangeIdx = 0;
+              const parallelWorker = async () => {
+                while (nextRangeIdx < remainingRanges.length) {
                   if (isAborted()) break;
-                  try {
-                    const chunkFetchOpts = {
-                      headers: { 'Range': target.rangeHeader }
-                    };
-                    if (abortCtrl) chunkFetchOpts.signal = abortCtrl.signal;
-                    chunkRes = await fetch(url, chunkFetchOpts);
-                    if (chunkRes && (chunkRes.status === 206 || chunkRes.status === 200)) {
-                      break;
+                  const target = remainingRanges[nextRangeIdx++];
+                  let chunkRes = null;
+                  for (let attempt = 1; attempt <= 3; attempt++) {
+                    if (isAborted()) break;
+                    try {
+                      const chunkFetchOpts = {
+                        headers: { 'Range': target.rangeHeader }
+                      };
+                      if (abortCtrl) chunkFetchOpts.signal = abortCtrl.signal;
+                      chunkRes = await fetch(url, chunkFetchOpts);
+                      if (chunkRes && chunkRes.status === 206) {
+                        break;
+                      }
+                    } catch (retryErr) {
+                      if (isAborted()) throw retryErr;
+                      if (attempt === 3) throw retryErr;
+                      await new Promise(r => setTimeout(r, 150 * attempt));
                     }
-                  } catch (retryErr) {
-                    if (isAborted()) throw retryErr;
-                    if (attempt === 3) throw retryErr;
-                    await new Promise(r => setTimeout(r, 150 * attempt));
+                  }
+
+                  if (isAborted()) break;
+                  if (!chunkRes || chunkRes.status !== 206) {
+                    throw new Error(`Range chunk fetch failed for "${track.name}" (${target.rangeHeader}).`);
+                  }
+
+                  const chunkAb = await chunkRes.arrayBuffer();
+                  const chunkU8 = new Uint8Array(chunkAb);
+                  const expectedMax = assembled.length - target.offset;
+                  if (chunkU8.length === 0 || chunkU8.length > expectedMax) {
+                    throw new Error(`Unexpected chunk length (${chunkU8.length}) for ${target.rangeHeader}`);
+                  }
+                  assembled.set(chunkU8, target.offset);
+                  loaded += chunkU8.length;
+                  if (onProgress) {
+                    onProgress(Math.min(loaded, totalBytes), totalBytes, track);
                   }
                 }
+              };
 
-                if (isAborted()) break;
-                if (!chunkRes || (chunkRes.status !== 206 && chunkRes.status !== 200)) {
-                  throw new Error(`Range chunk fetch failed for "${track.name}" (${target.rangeHeader}).`);
-                }
+              const concurrency = Math.min(3, remainingRanges.length);
+              await Promise.all(Array.from({ length: concurrency }, () => parallelWorker()));
 
-                const chunkAb = await chunkRes.arrayBuffer();
-                const chunkU8 = new Uint8Array(chunkAb);
-                assembled.set(chunkU8, target.offset);
-                loaded += chunkU8.length;
-                if (onProgress) {
-                  onProgress(loaded, totalBytes, track);
-                }
+              if (isAborted()) {
+                const abortedErr = new Error('Track load superseded.');
+                abortedErr.isAborted = true;
+                throw abortedErr;
               }
-            };
 
-            const concurrency = Math.min(3, remainingRanges.length);
-            await Promise.all(Array.from({ length: concurrency }, () => parallelWorker()));
-
-            if (isAborted()) {
-              const abortedErr = new Error('Track load superseded.');
-              abortedErr.isAborted = true;
-              throw abortedErr;
+              assembledBuf = assembled.buffer;
+              if (onProgress) onProgress(totalBytes, totalBytes, track);
             }
-
-            assembledBuf = assembled.buffer;
-            if (onProgress) onProgress(totalBytes, totalBytes, track);
           } else {
             const fetchOpts = abortCtrl ? { signal: abortCtrl.signal } : {};
             const res = await fetch(url, fetchOpts);
@@ -6730,6 +6741,8 @@ const appState = {
 
   // Audio playback & loop region state
   isPlaying: false,
+  isBufferingPartial: false,
+  _partialSliceEndedOffsetSec: 0,
   loopStartRatio: 0.0,
   loopEndRatio: 1.0,
   draggingHandle: null,
@@ -8796,6 +8809,8 @@ function switchAudioSourceMode(mode) {
   });
 
   sgSourceManager.sourceMode = targetMode;
+  appState.isBufferingPartial = false;
+  appState._partialSliceEndedOffsetSec = 0;
   appState.playbackOffsetSec = 0;
 
   if (targetMode === 'studio') {
@@ -8860,6 +8875,9 @@ function syncAudioFormatControlsUI() {
 }
 
 function getCurrentPlaybackPositionSec(buf) {
+  if (appState.isBufferingPartial) {
+    return appState._partialSliceEndedOffsetSec || appState.playbackOffsetSec || 0;
+  }
   if (!appState.isPlaying || !sgAudioEngine || !sgAudioEngine.audioCtx) {
     return appState.playbackOffsetSec || 0;
   }
@@ -9547,7 +9565,13 @@ async function loadDriveTrackAndMaybePlay(track, shouldPlay) {
         if (appState.isBufferingPartial) {
           appState.isBufferingPartial = false;
           hideTransportNotice();
-          const resumeOffset = (cachedSlice && cachedSlice.audioBuffer) ? cachedSlice.audioBuffer.duration : appState.playbackOffsetSec;
+          const liveSliceRec = (typeof sgSourceManager.getSliceRecord === 'function')
+            ? sgSourceManager.getSliceRecord(track.fileId)
+            : cachedSlice;
+          const resumeOffset = (typeof appState._partialSliceEndedOffsetSec === 'number' && appState._partialSliceEndedOffsetSec > 0)
+            ? appState._partialSliceEndedOffsetSec
+            : ((liveSliceRec && liveSliceRec.audioBuffer) ? liveSliceRec.audioBuffer.duration : appState.playbackOffsetSec);
+          appState._partialSliceEndedOffsetSec = 0;
           appState.playbackOffsetSec = resumeOffset;
           startDecodedActiveBufferPlayback(buf, false, false);
         } else {
@@ -9602,7 +9626,12 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = fals
   const fullDur = (driveWf && driveWf.durationSec) ? driveWf.durationSec : buf.duration;
 
   // Determine if this buffer is an incomplete initial slice:
-  const isPartial = Boolean(isPartialSlice || (isDriveTrack && fullDur > 0 && buf.duration < (fullDur - 1.5)));
+  const activeSr = (sgAudioEngine && sgAudioEngine.audioCtx && sgAudioEngine.audioCtx.sampleRate) || 48000;
+  const isFullCached = isDriveTrack
+    ? Boolean(sgSourceManager.driveDecodedCache.has(`${sgSourceManager.selectedDriveTrackId}@${activeSr}`))
+    : false;
+  const isStillStreamingSelected = isDriveTrack && appState._loadingDriveTrackId === sgSourceManager.selectedDriveTrackId && !isFullCached;
+  const isPartial = Boolean(isPartialSlice || isStillStreamingSelected || (isDriveTrack && fullDur > 0 && buf.duration < (fullDur - 1.5)));
 
   const targetLoopStart = appState.loopStartRatio * fullDur;
   const targetLoopEnd = Math.max(targetLoopStart + 0.15, appState.loopEndRatio * fullDur);
@@ -9616,9 +9645,27 @@ function startDecodedActiveBufferPlayback(buf, useHotSwap, isPartialSlice = fals
     ? buf.duration
     : Math.max(effectiveLoopStart + 0.15, Math.min(buf.duration, targetLoopEnd));
 
-  // CRITICAL FIX: Partial slices MUST NEVER loop! Setting loop to true on a 5s slice causes it
+  // CRITICAL FIX: Partial slices MUST NEVER loop! Setting loop to true on a slice causes it
   // to loop repeatedly like a broken record until the full song finishes downloading!
   const shouldLoop = !isPartial;
+
+  // If user seeked beyond what the partial slice currently holds, wait cleanly in buffering state
+  // at the requested target offset instead of truncating and playing a tiny 0.02s stub at the end of the slice.
+  if (isPartial && appState.playbackOffsetSec >= (buf.duration - 0.25)) {
+    appState.isPlaying = true;
+    appState.isBufferingPartial = true;
+    appState._partialSliceEndedOffsetSec = appState.playbackOffsetSec;
+    sgAudioEngine.disconnectActiveSources();
+    const trk = sgSourceManager.getSelectedDriveTrack();
+    const cleanName = trk ? (sanitizeTrackDisplayName(trk.name) || trk.name) : 'FREE AUDIO';
+    showTransportNotice(`Buffering "${cleanName}" (${appState._driveLoadPercent || 0}%)...`, false);
+    ensureStudioAnimationLoopRunning();
+    updateTransportPlayUI();
+    return true;
+  }
+
+  appState.isBufferingPartial = false;
+  appState._partialSliceEndedOffsetSec = 0;
 
   const startInfo = (useHotSwap && typeof sgAudioEngine.hotSwapBufferLoop === 'function')
     ? sgAudioEngine.hotSwapBufferLoop(buf, effectiveLoopStart, effectiveLoopEnd, appState.playbackOffsetSec, shouldLoop)
@@ -9646,6 +9693,9 @@ if (typeof sgAudioEngine !== 'undefined' && sgAudioEngine) {
     // If an incomplete initial slice reached its end while full master track is still downloading:
     if (appState._loadingDriveTrackId && appState.isPlaying) {
       appState.isBufferingPartial = true;
+      const endedOffset = (endedBuf && endedBuf.duration) ? endedBuf.duration : (appState.playbackOffsetSec || 0);
+      appState._partialSliceEndedOffsetSec = endedOffset;
+      appState.playbackOffsetSec = endedOffset;
       const track = (typeof sgSourceManager !== 'undefined' && sgSourceManager.getSelectedDriveTrack)
         ? sgSourceManager.getSelectedDriveTrack()
         : null;
@@ -9657,6 +9707,8 @@ if (typeof sgAudioEngine !== 'undefined' && sgAudioEngine) {
 
 function selectStudioLoop(loopKey) {
   markUserTrainingInteraction();
+  appState.isBufferingPartial = false;
+  appState._partialSliceEndedOffsetSec = 0;
   const key = String(loopKey || 'drums');
 
   if (key === 'action:open-local-file') {
@@ -10183,6 +10235,8 @@ function stopAudioPlayback() {
   if (appState.isPlaying) {
     captureCurrentPlayheadOffsetSec();
   }
+  appState.isBufferingPartial = false;
+  appState._partialSliceEndedOffsetSec = 0;
   sgAudioEngine.disconnectActiveSources();
   appState.isPlaying = false;
   updateTransportPlayUI();

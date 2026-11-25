@@ -10,7 +10,19 @@ const path = require('path');
 const audioDir = path.resolve(__dirname, '../audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
 
-const catalogUrl = 'https://script.google.com/macros/s/AKfycbzLHk2-SsGIXKgbRgHj9PYpCH9niiBTj08RlaBAk6Bt0ywygJUKtXec2POug46DR8H5/exec?api=free-audio-catalog';
+function resolveGasCatalogUrl() {
+  const fallbackBase = 'https://script.google.com/macros/s/AKfycbwbevs2dldzGK5C2m2qim-RVARA5zTBXrNNfGrVetw-xc3nJZh0Jd0p_9p4pQhqvhge/exec';
+  try {
+    const indexPath = path.resolve(__dirname, '../index.html');
+    if (fs.existsSync(indexPath)) {
+      const html = fs.readFileSync(indexPath, 'utf8');
+      const m = html.match(/gasBaseUrl\s*=\s*"([^"]+)"/);
+      if (m && m[1]) return `${m[1]}?api=free-audio-catalog`;
+    }
+  } catch (e) {}
+  return `${fallbackBase}?api=free-audio-catalog`;
+}
+const catalogUrl = resolveGasCatalogUrl();
 
 function toAsciiFilename(name) {
   return name
